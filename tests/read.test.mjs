@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { readTailRecords } from "../src/parser/read.mjs";
+import { readAllRecords, readTailRecords } from "../src/parser/read.mjs";
 
 /** Writes a JSONL file and returns its path. */
 function transcript(lines) {
@@ -27,6 +27,18 @@ test("discards the partial line the tail window cuts through", () => {
 	assert.deepEqual(
 		records.map((r) => r.marker),
 		["second", "third"],
+	);
+});
+
+test("keeps the first record, which the tail reader deliberately drops", () => {
+	const path = transcript([
+		{ type: "assistant", marker: "first" },
+		{ type: "assistant", marker: "second" },
+	]);
+
+	assert.deepEqual(
+		readAllRecords(path).map((r) => r.marker),
+		["first", "second"],
 	);
 });
 

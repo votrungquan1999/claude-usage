@@ -13,7 +13,9 @@ Claude Code bills context as a **recurring** cost — every turn re-reads the wh
 
 ## Status
 
-Planning done, implementation starting. See `PLAN.md`.
+Phase 1 (local readout) is built and tested — status line, report, installer, skill. Phase 2
+(cross-machine sync) and Phase 3 (dashboard) are planned but not started. See `PLAN.md` and
+`IMPLEMENTATION_PROGRESS.md`.
 
 ## Install
 

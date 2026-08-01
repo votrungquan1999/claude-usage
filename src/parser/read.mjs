@@ -1,6 +1,16 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 
 /**
+ * Read a whole transcript. For the on-demand report, where session totals need every turn.
+ *
+ * @param {string} path
+ * @returns {object[]} parsed records, oldest first
+ */
+export function readAllRecords(path) {
+	return readTailRecords(path, Number.MAX_SAFE_INTEGER);
+}
+
+/**
  * Read the last `bytes` of a JSONL transcript and parse what survives.
  *
  * Transcripts run to multiple MB and the status line renders every turn, so reading the

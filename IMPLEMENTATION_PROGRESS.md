@@ -73,3 +73,38 @@ are impossible on a per-render path. Files untouched since the previous turn are
 
 **Payload extras not yet used:** `rate_limits` carries 5-hour and 7-day subscription usage with
 reset times — a natural status line addition, but out of scope for the current plan.
+
+---
+
+### Steps 5-6: Installer, report, skill
+
+**Status:** ✅ Done
+
+**Tests Written (6 tests, all passing ✅):**
+
+1. ✅ Adds the status line without disturbing existing settings
+2. ✅ Links the repo to a stable path and wires the status line
+3. ✅ Re-running is safe and keeps a copy of what it replaced
+4. ✅ Splits session spend by model so a cheap model's share is visible
+5. ✅ Keeps the first record, which the tail reader deliberately drops
+6. ✅ Finds the session's transcript even when the shell has cd'd elsewhere
+
+**Bug caught by test 6:** the report resolved its project directory from `cwd`, so running it
+from a subdirectory of the session's project looked in a folder with no transcript at all and
+failed outright. `CLAUDE_CODE_SESSION_ID` is authoritative — search the project dirs for it
+rather than deriving a path.
+
+**Installer:** symlinks the checkout to `~/.claude/claude-usage` so settings, hooks and the
+skill all reference one fixed path regardless of clone location. Patches `~/.claude/settings.json`
+by merge, never rewrite, backing up first, and follows the file if it is itself a symlink.
+
+**Skill:** `AI-rules-repo/skills/claude-code/claude-usage/SKILL.md`, a thin wrapper over
+`bin/report.mjs`. Skills prime from the filesystem, so no manifest entry is needed. The
+`.claude/skills/` dogfood copy is CLI-generated and was not touched.
+
+**Verified live:** report reads this session's 3MB transcript in 78ms — 242 turns, $53.34.
+
+**Note on strict TDD:** the installer's backup and idempotency were written alongside the first
+installer test rather than driven by their own failing test, so test 3 was green on first run.
+Tests 5 and 6 in Steps 2-4, and test 5 here, were likewise green from the start (trivial
+delegation). Called out rather than papered over.
