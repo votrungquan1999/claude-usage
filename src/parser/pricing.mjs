@@ -37,6 +37,19 @@ const CACHE_WRITE_5M = 1.25;
 const CACHE_WRITE_1H = 2.0;
 
 /**
+ * Whether a cost figure for this model can be trusted.
+ *
+ * Unknown models cost $0, which reads as "cheap" rather than "unmeasured" — callers use
+ * this to render `?` instead. A new model release is exactly when this matters.
+ *
+ * @param {string} model
+ * @returns {boolean}
+ */
+export function isPricedModel(model) {
+	return normalizeModel(model) in PRICES;
+}
+
+/**
  * Base input price for a model at a point in time, USD per million tokens.
  *
  * @param {string} model

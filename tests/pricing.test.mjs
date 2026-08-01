@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { turnCost } from "../src/parser/pricing.mjs";
+import { isPricedModel, turnCost } from "../src/parser/pricing.mjs";
+
+test("reports whether a model has a known price, so $0 is never mistaken for cheap", () => {
+	assert.equal(isPricedModel("claude-opus-5[1m]"), true);
+	assert.equal(isPricedModel("claude-something-unreleased"), false);
+});
 
 test("prices each cache tier at its own multiplier", () => {
 	// One MTok in every bucket, so a wrong multiplier on any one of them shifts the total.
