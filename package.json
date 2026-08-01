@@ -1,0 +1,14 @@
+{
+  "name": "claude-usage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Context size and cost readout for Claude Code, plus cross-machine usage sync and dashboard",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch"
+  }
+}
