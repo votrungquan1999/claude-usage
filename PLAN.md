@@ -1,0 +1,149 @@
+# Plan: Claude Code usage tracking — local readout + cross-machine sync + dashboard
+
+Implements AI-Kanban **#112** (local readout) and **#118** (sync + dashboard).
+
+---
+
+## 0. Shape
+
+**One parser, four consumers, one new repo + one skill.**
+
+```
+personal/claude-usage/            # NEW repo — cloned on both machines
+  src/parser/                     # shared core. zero deps, plain ESM
+    read.mjs                      #   tail-read + full-read a transcript
+    dedupe.mjs                    #   (requestId, message.id) -> MAX output_tokens
+    pricing.mjs                   #   effective-dated price table
+    session.mjs                   #   context size, per-turn cost, carry, warnings
+    subagents.mjs                 #   walk <session-id>/subagents/agent-*.jsonl
+  bin/statusline.mjs              # ONE line to stdout        (tail-read, <100ms)
+  bin/report.mjs                  # deep readout, JSON+text   (full read)
+  bin/sync.mjs                    # upload aggregates          (detached)
+  bin/backfill.mjs                # one-shot whole history
+  hooks/session-start.mjs         # inline sync
+  hooks/user-prompt-submit.mjs    # dirty marker + detach      (<10ms)
+  scripts/install.mjs             # symlink + patch ~/.claude/settings.json
+  db/migrations/
+  web/                            # Next.js dashboard (TS)
+  tests/fixtures/*.jsonl          # synthesized, hand-built
+
+AI-rules-repo/skills/claude-code/claude-usage/SKILL.md   # thin: shells to report.mjs
+```
+
+### Why a new repo and not AI-rules-repo
+
+The statusline and the sync hooks must apply to **every** project on the machine, so they install into `~/.claude/settings.json` at user level — not per-project, which is all the AI-rules CLI does. Distribution is `git clone` + `git pull`, exactly the openclaw-ops pattern already running on this machine.
+
+`scripts/install.mjs` symlinks the clone to **`~/.claude/claude-usage`** so every reference (statusline command, hooks, skill) uses one stable absolute path regardless of where each machine cloned it.
+
+The **skill** is the exception — it goes in AI-rules-repo, because skills genuinely do distribute per-project via the CLI, and it is only a few lines pointing at `~/.claude/claude-usage/bin/report.mjs`.
+
+### Language
+
+`src/parser` + `bin/` + `hooks/` are **plain `.mjs` with JSDoc types, no build step**. A compile step means a forgotten `npm run build` after `git pull` silently breaks the statusline on the other machine. `web/` is normal TypeScript/Next.
+
+---
+
+## Phase 1 — Local readout (card #112)
+
+### Step 1: Report the true size and cost of the current session
+
+**AC:** Given a transcript, the parser returns context size, last-turn cost, carry cost, and session total, and its totals match `ccusage` on real history.
+**Test type:** unit (synthesized fixtures) + one opt-in golden test vs ccusage.
+
+Covers the four verified mechanics: MAX-`output_tokens` dedupe, context = last assistant record's three input fields (not a sum), cache tiers 0.1× / 1.25× / 2.0×, `[1m]` suffix stripping.
+
+Pricing is **effective-dated from day one**, not a flat map — Sonnet 5's intro $2/$10 expires **2026-08-31** (~4 weeks out). Every price lookup takes the message timestamp.
+
+### Step 2: See context and cost without asking, in the terminal
+
+**AC:** `statusline.mjs` prints the #112 line in <100ms on a multi-MB transcript, and wiring it to `statusLine.command` shows it live.
+**Test type:** unit on formatting + a timing assertion against a large fixture.
+
+Tail-reads ~256KB. Deliberately **no session total on the line** — a running total needs the whole file; the line carries only what the tail can prove (context %, last turn, carry, warnings). Session total belongs to `report`.
+
+### Step 3: Be warned before an expensive turn, not after
+
+**AC:** The line flags cache-prefix invalidation (large `cache_creation` + small `cache_read`) and context crossing a threshold.
+**Test type:** unit.
+
+### Step 4: See what subagents cost, separately
+
+**AC:** Subagent spend for the current session is walked from the nested path and rendered as a separate `+$X` term.
+**Test type:** unit with a nested fixture tree.
+
+### Step 5: Install it on a machine in one command
+
+**AC:** `node scripts/install.mjs` symlinks to `~/.claude/claude-usage`, patches `~/.claude/settings.json` non-destructively, is idempotent, and backs up the settings file first.
+**Test type:** integration against a temp `$HOME`.
+
+### Step 6: Get the deep readout inside VSCode, where there is no status line
+
+**AC:** The `claude-usage` skill returns a full breakdown for the current session in both terminal and extension.
+**Test type:** manual invocation.
+
+`statusLine` is CLI-only and the extension is proprietary + minified, so the skill is the *only* ambient-ish display that works in VSCode today.
+
+### Step 7 (conditional): VSCode status bar bridge
+
+Build **only if step 6 proves insufficient in daily use.** Thin wrapper shelling to `statusline.mjs`, inferring the session by newest-mtime `.jsonl`. Deferred by default.
+
+---
+
+## Phase 2 — Sync (card #118)
+
+### Step 8: Decide where the data lives, then define the schema
+
+**AC:** Migration applied; `usage_events` PK `(request_id, message_id)`; `machine_id` / `account_uuid` / `org_uuid` / `is_subagent` columns; self-healing upsert with `greatest(...)` on `output_tokens`; separate effective-dated `pricing` table.
+**Test type:** integration against the real DB.
+
+**Blocked on two open questions — see §4.**
+
+### Step 9: Get one machine's usage into the DB
+
+**AC:** `sync.mjs` uploads aggregates only, stamps identity from `~/.claude.json`, computes `cost_usd` at sync time using the price effective at each message's timestamp, and re-running it changes nothing.
+**Test type:** integration.
+
+**Aggregates only — transcripts never leave the machine.** The JSONL holds source code, file contents, and every tool result. Only per-message token counts ship.
+
+### Step 10: Keep it fresh without a scheduler
+
+**AC:** `SessionStart` syncs inline; `UserPromptSubmit` writes a dirty marker and returns in <10ms with a genuinely detached upload; both fail silently.
+**Test type:** integration + a latency assertion.
+
+Detach must be `spawn(..., {detached:true, stdio:'ignore'}).unref()` — `& disown` is not enough, Claude Code can wait on inherited fds.
+
+### Step 11: Bring in the existing history
+
+**AC:** `backfill.mjs` walks all history (~46K rows, ~$5.9K) through the same parser and upsert; safe to re-run.
+**Test type:** integration.
+
+---
+
+## Phase 3 — Dashboard (card #118)
+
+### Step 12: See spend broken down the ways that drive decisions
+
+**AC:** Cost per day / machine / project / model; subagent share over time; cache read-vs-write efficiency; session drill-down.
+**Test type:** unit on query layer + e2e on the views.
+
+Dropped from #118: the `~/.claude/usage-data/session-meta/*.json` join. That directory **no longer exists** (verified 2026-08-01) — it was a one-off snapshot, not a live feed.
+
+---
+
+## 3. Risks
+
+- **MAX-`output_tokens` dedupe** — highest risk in the whole build; a first-copy read undercounts output ~38% and misreports the headline by up to 200×. Pinned by a dedicated fixture and re-caught by the DB's `greatest(...)` upsert, so it is impossible to *persist* even if the reader regresses.
+- **Tail-read straddling** — a 256KB window can cut a record mid-line and can split streaming copies. Discard the first partial line; only derive tail-safe values on the status line.
+- **Pricing drift** — flat price maps silently reprice history the moment intro pricing expires. Effective-dating is not optional, and the expiry is ~4 weeks out.
+- **Secrets on two machines** — DB key in `~/.claude/claude-usage/.env`, gitignored, never in the repo.
+- **Settings patching** — `~/.claude/settings.json` is live config; back it up and merge, never rewrite.
+
+---
+
+## 4. Open questions (blocking Phase 2 only)
+
+1. **DB host** — recommend a **new dedicated Supabase project**. MCP already wired; Postgres-over-REST means sync is a plain `fetch` with no client library on either machine; RLS keeps it private. Alternatives: reuse mainnet/testnet (mixes personal telemetry into an unrelated project), or Neon via personal-infra Pulumi (consistent with existing IaC but needs a PR/deploy cycle, and free tier caps retention at 6h).
+2. **Account topology** — same Anthropic account on both machines, or is one work? Recommend modelling `account_uuid` as a first-class column either way, so adding a work account later needs no migration.
+
+Neither blocks Phase 1.
