@@ -32,17 +32,17 @@ test("context size is the last turn's input fields, not a sum across turns", () 
 
 test("session total sums the cost of every deduped turn", () => {
 	const turns = [
-		turn({ outputTokens: 1_000_000 }), // $75
-		turn({ inputTokens: 1_000_000 }), // $15
-		turn({ cacheRead: 1_000_000 }), // $1.50 at 0.1x
+		turn({ outputTokens: 1_000_000 }), // $25
+		turn({ inputTokens: 1_000_000 }), // $5
+		turn({ cacheRead: 1_000_000 }), // $0.50 at 0.1x
 	];
 
-	assert.equal(sessionTotal(turns).toFixed(2), "91.50");
+	assert.equal(sessionTotal(turns).toFixed(2), "30.50");
 });
 
 test("carry cost is what the next turn re-reads before you type anything", () => {
-	// 1M tokens of context, re-read as a cache hit at 0.1x the $15 input price.
+	// 1M tokens of context, re-read as a cache hit at 0.1x the $5 input price.
 	const turns = [turn({ cacheRead: 1_000_000 })];
 
-	assert.equal(carryCost(turns).toFixed(2), "1.50");
+	assert.equal(carryCost(turns).toFixed(2), "0.50");
 });

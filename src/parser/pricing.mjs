@@ -7,14 +7,15 @@ import { normalizeModel } from "./models.mjs";
  * a flat table silently reprices all past usage the moment an introductory rate expires.
  */
 const PRICES = {
-	"claude-opus-5": [{ from: "", input: 15, output: 75 }],
-	"claude-opus-4-8": [{ from: "", input: 15, output: 75 }],
-	"claude-opus-4-7": [{ from: "", input: 15, output: 75 }],
+	"claude-opus-5": [{ from: "", input: 5, output: 25 }],
+	"claude-opus-4-8": [{ from: "", input: 5, output: 25 }],
+	"claude-opus-4-7": [{ from: "", input: 5, output: 25 }],
 	"claude-sonnet-5": [
 		{ from: "", input: 2, output: 10 }, // introductory
 		{ from: "2026-09-01", input: 3, output: 15 }, // list
 	],
 	"claude-sonnet-4-6": [{ from: "", input: 3, output: 15 }],
+	"claude-fable-5": [{ from: "", input: 10, output: 50 }],
 	"claude-haiku-4-5": [{ from: "", input: 1, output: 5 }],
 };
 

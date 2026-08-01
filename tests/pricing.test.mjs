@@ -22,8 +22,8 @@ test("prices each cache tier at its own multiplier", () => {
 		},
 	};
 
-	// $15 input + $1.50 read (0.1x) + $18.75 5m (1.25x) + $30 1h (2.0x) + $75 output
-	assert.equal(turnCost(turn), 140.25);
+	// $5 input + $0.50 read (0.1x) + $6.25 5m (1.25x) + $10 1h (2.0x) + $25 output
+	assert.equal(turnCost(turn), 46.75);
 });
 
 test("prices a model string carrying a [1m] suffix", () => {
@@ -41,7 +41,7 @@ test("prices a model string carrying a [1m] suffix", () => {
 		},
 	};
 
-	assert.equal(turnCost(turn), 90); // $15 input + $75 output
+	assert.equal(turnCost(turn), 30); // $5 input + $25 output
 });
 
 test("uses the price effective at the message's timestamp", () => {

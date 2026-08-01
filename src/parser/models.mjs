@@ -10,13 +10,19 @@ const CONTEXT_WINDOWS = {
 };
 
 /**
- * Strip the variant suffix Claude Code appends to the model id, e.g. `claude-opus-5[1m]`.
+ * Reduce a model string to its table key.
+ *
+ * Two suffixes appear in the wild: a context variant (`claude-opus-5[1m]`) and a release
+ * date (`claude-haiku-4-5-20251001`). Both must go, or the lookup misses and the model
+ * silently prices at $0.
  *
  * @param {string} model
  * @returns {string}
  */
 export function normalizeModel(model) {
-	return String(model ?? "").replace(/\[.*\]$/, "");
+	return String(model ?? "")
+		.replace(/\[.*\]$/, "")
+		.replace(/-\d{8}$/, "");
 }
 
 /**
