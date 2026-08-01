@@ -37,4 +37,39 @@ Plan: [PLAN.md](./PLAN.md) · AI-Kanban #112 (local readout), #118 (sync + dashb
 
 **How the prices were verified:** `ccusage daily --json` gives per-model tokens and cost. Solving for `(input, output)` such that the implied cache-creation multiplier lands in [1.25, 2.0] admits exactly one candidate per model — and models that only used 5m cache land on exactly 1.25, making the fit unambiguous. Verified table: Opus 5/4.8/4.7 $5/$25, Fable 5 $10/$50, Sonnet 4.6 $3/$15, Sonnet 5 $2/$10 intro then $3/$15, Haiku 4.5 $1/$5.
 
-**Open design question:** an unknown model currently returns $0 silently. See PLAN.md §4.
+**Decided:** an unknown model renders `$?`, never `$0.00` — `isPricedModel` carries the signal.
+
+---
+
+### Steps 2-4: Status line, warnings, subagent spend
+
+**Status:** ✅ Done
+
+**Tests Written (11 tests, all passing ✅):**
+
+1. ✅ Discards the partial line the tail window cuts through
+2. ✅ Reads a multi-MB transcript in under 100ms
+3. ✅ Renders context, last turn and carry as one line
+4. ✅ Breaks subagent spend out of the turn cost rather than folding it in
+5. ✅ Appends warnings without displacing the figures
+6. ✅ Shows `?` rather than `$0.00` when a model has no known price
+7. ✅ Takes context from the statusLine payload and turn cost from the transcript
+8. ✅ Warns when a turn rewrites more cache than it reads
+9. ✅ Warns when context is close enough to full that compaction is coming
+10. ✅ Counts only subagent work done since the previous turn
+
+**Design change — Claude Code already reports context.** The statusLine payload includes a
+`context_window` block (`total_input_tokens`, `context_window_size`, `used_percentage`, and a
+`current_usage` breakdown), so context size and the model's real window are handed to us and
+never have to be inferred. The transcript is still needed for the **5m/1h cache split**, which
+the payload omits and which the two write tiers price differently (1.25x vs 2.0x).
+
+**Subagent attribution:** a single session's subagent transcripts can reach 85MB, so full reads
+are impossible on a per-render path. Files untouched since the previous turn are skipped on
+`mtime` alone; the rest are tail-read. Measured at 3.4ms across a real session.
+
+**Verified live:** `◔ 18.9% (189K/1M) · turn $0.12 · carry $0.09/turn` on this session's own
+2.98MB transcript in **36ms**, against a 100ms budget.
+
+**Payload extras not yet used:** `rate_limits` carries 5-hour and 7-day subscription usage with
+reset times — a natural status line addition, but out of scope for the current plan.
