@@ -14,8 +14,13 @@ export interface UsageEventDocument {
 	sessionId: string;
 	projectSlug: string;
 	machineId: string;
-	accountUuid: string;
-	orgUuid: string;
+	// Opaque hash of the normalized git remote (D20) — absent, not null, when the project
+	// directory's cwd isn't a git repo, or no longer exists. Never the remote URL itself.
+	repoKey?: string;
+	// Absent, not null, when a session predates the account ledger (D7) — every one of the
+	// 201 real sessions today falls in this case, so this is the common shape, not an edge one.
+	accountUuid?: string;
+	orgUuid?: string;
 	model: string;
 	timestamp: Date;
 	inputTokens: number;
@@ -24,6 +29,10 @@ export interface UsageEventDocument {
 	cacheWrite1hTokens: number;
 	outputTokens: number;
 	costUsd: number;
+	// Whether costUsd is trustworthy: false when the model is unpriced OR the timestamp was
+	// missing. Never $max'd — see saveUsageEvents — since BSON orders false < true and a $max
+	// boolean can only ratchet toward true, never demote a corrected resync back down.
+	priced: boolean;
 	isSubagent: boolean;
 }
 
@@ -43,6 +52,11 @@ export async function ensureUsageIndexes(db: Db): Promise<void> {
 	await collection.createIndex({ timestamp: -1 }, { name: "by_time" });
 	await collection.createIndex({ machineId: 1, timestamp: -1 }, { name: "by_machine_time" });
 	await collection.createIndex({ projectSlug: 1, timestamp: -1 }, { name: "by_project_time" });
+
+	// The session drill-down (Step 21) filters on sessionId alone; nothing else covers it, so
+	// without this it's a full COLLSCAN over the whole collection on a shared M0. Ascending
+	// timestamp too so the matched set comes back pre-sorted for the breakdown.
+	await collection.createIndex({ sessionId: 1, timestamp: 1 }, { name: "by_session" });
 }
 
 /**
@@ -56,16 +70,40 @@ export async function saveUsageEvents(db: Db, events: UsageEventDocument[]): Pro
 	if (events.length === 0) return 0;
 
 	const operations = events.map((event) => {
-		const { requestId, messageId, outputTokens, costUsd, ...rest } = event;
+		const {
+			requestId,
+			messageId,
+			sessionId,
+			projectSlug,
+			machineId,
+			repoKey,
+			model,
+			timestamp,
+			isSubagent,
+			inputTokens,
+			cacheReadTokens,
+			cacheWrite5mTokens,
+			cacheWrite1hTokens,
+			outputTokens,
+			costUsd,
+			...rest // priced, and accountUuid/orgUuid when known — always the mapper's latest determination
+		} = event;
 
 		return {
 			updateOne: {
 				filter: { requestId, messageId },
 				update: {
-					// $max, never $set: a sync that caught a message mid-stream carries a partial
-					// output count, and this makes that impossible to persist. Cost rises with
-					// output for the same message, so it is monotonic too.
-					$max: { outputTokens, costUsd },
+					// First writer wins: identity of who ran a message, never re-stamped by a later
+					// sync. D18 — a session forked from an earlier one must not migrate an inherited
+					// message's cost out of the parent session's drill-down. repoKey joins this group
+					// (D20) — it identifies which repository the message belongs to, not a count, and
+					// is spread in only when present so an undefined value is never sent to Mongo.
+					$setOnInsert: { sessionId, projectSlug, machineId, model, timestamp, isSubagent, ...(repoKey !== undefined && { repoKey }) },
+					// $max, never $set: a sync that caught a message mid-stream carries partial
+					// counts, and this makes that impossible to persist. Covers every token field,
+					// not just output — the cache read-vs-write view depends on all of them. Cost
+					// rises with output for the same message, so it is monotonic too.
+					$max: { inputTokens, cacheReadTokens, cacheWrite5mTokens, cacheWrite1hTokens, outputTokens, costUsd },
 					$set: rest,
 				},
 				upsert: true,
