@@ -199,8 +199,28 @@ Next.js only adds `src/app/`.
 **UI — shadcn with Base UI** (the default since 2026-07), style `base-nova`, `neutral` base colour,
 dark-first since it is a data dashboard.
 
-**Account topology — still unanswered, and deliberately not blocking.** `accountUuid` is modelled
-as a first-class field regardless, so adding a work account later needs no migration.
+**Account topology — accounts are switched on a single machine, so account is per-session, not
+per-machine.** The work machine moves between a work and a personal account.
+
+Nothing on disk records which account produced a turn: the transcript has no account field at all,
+and `~/.claude.json` holds only the *currently* logged-in `oauthAccount`, overwritten on switch. So
+the account can only be captured live, by the hooks.
+
+Stamping "whatever account is current at sync time" is right for turns happening now but **wrong
+for catch-up**: `SessionStart` uploads the tail of the previous session, and if the account changed
+in between, those older turns would be restamped with the new one.
+
+So the hooks maintain a local **account ledger**, `~/.claude/claude-usage/accounts.json`, mapping
+session id to effective-dated account entries — the same effective-dating the price table uses:
+
+```json
+{ "<session-id>": [ { "from": "<iso>", "accountUuid": "…", "orgUuid": "…" } ] }
+```
+
+A new entry is appended only when the account actually changes, so the per-prompt hook does not
+bloat it, and a mid-session `/login` switch is captured as a second window. Each turn is then
+attributed to the account active at *its* timestamp. Turns from sessions predating the ledger fall
+back to that session's earliest known account.
 
 ## 5. Phase 2 shape
 
