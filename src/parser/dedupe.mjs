@@ -2,6 +2,8 @@
  * @typedef {object} Turn
  * @property {string} requestId
  * @property {string} messageId
+ * @property {string} sessionId
+ * @property {boolean} isSidechain - Claude Code's own term for "this ran inside a subagent"
  * @property {string} model    - raw model string, may carry a `[1m]` suffix
  * @property {string} timestamp
  * @property {object} usage    - the raw `message.usage` block
@@ -33,6 +35,8 @@ export function dedupeAssistantTurns(records) {
 		best.set(key, {
 			requestId: record.requestId,
 			messageId: record.message.id,
+			sessionId: record.sessionId,
+			isSidechain: record.isSidechain,
 			model: record.message.model,
 			timestamp: record.timestamp,
 			usage,

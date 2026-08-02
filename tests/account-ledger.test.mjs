@@ -44,3 +44,15 @@ test("attributes a turn to the account that was active when it ran", () => {
 		orgUuid: "personal-org",
 	});
 });
+
+test("does not attribute a turn to the ledger's earliest entry when that entry was recorded long after the turn ran (R12)", () => {
+	// The account switched machine-wide after this turn ran; the ledger's first-ever
+	// observation of this session happened days later, at whatever account was live THEN.
+	// Falling back to it would stamp a turn with the account active at sync time, not the
+	// account that actually ran it -- D7's forbidden outcome.
+	const ledger = {
+		"session-old": [{ from: "2026-08-02T12:00:00.000Z", accountUuid: "acct-personal", orgUuid: "org-personal" }],
+	};
+
+	assert.equal(accountFor(ledger, "session-old", "2026-07-25T09:00:00.000Z"), null);
+});
