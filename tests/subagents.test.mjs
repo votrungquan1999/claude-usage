@@ -46,3 +46,29 @@ test("counts only subagent work done since the previous turn", () => {
 
 	assert.equal(cost.toFixed(4), "0.0250");
 });
+
+test("counts agents launched inside a workflow, nested two levels under subagents/", () => {
+	const dir = mkdtempSync(join(tmpdir(), "claude-usage-"));
+	const transcript = join(dir, "session.jsonl");
+	writeFileSync(transcript, "");
+
+	// Real layout: subagents/workflows/wf_<id>/agent-<id>.jsonl, with a journal.jsonl sibling
+	// that must stay excluded (orchestration bookkeeping). Deliberately hostile fixture: journal.jsonl
+	// carries the same assistant-turn payload as agent-nested.jsonl, so if the agent- prefix filter
+	// were dropped, the double-counted total would give this test away.
+	const workflowDir = join(dir, "session", "subagents", "workflows", "wf_abc");
+	mkdirSync(workflowDir, { recursive: true });
+	writeFileSync(
+		join(workflowDir, "agent-nested.jsonl"),
+		`${JSON.stringify(agentTurn({ id: 3, timestamp: "2026-08-01T11:00:00.000Z", output: 1_000 }))}\n`,
+	);
+	writeFileSync(
+		join(workflowDir, "journal.jsonl"),
+		`${JSON.stringify(agentTurn({ id: 4, timestamp: "2026-08-01T11:00:00.000Z", output: 1_000 }))}\n`,
+	);
+
+	// 1000 output tokens at $25/MTok — 2000 (0.0500) if journal.jsonl were wrongly included.
+	const cost = subagentCostSince(transcript, "2026-08-01T10:00:00.000Z");
+
+	assert.equal(cost.toFixed(4), "0.0250");
+});

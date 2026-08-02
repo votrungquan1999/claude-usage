@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { dedupeAssistantTurns } from "./dedupe.mjs";
 import { turnCost } from "./pricing.mjs";
@@ -21,7 +21,9 @@ export function subagentCostSince(transcriptPath, since) {
 
 	let entries;
 	try {
-		entries = readdirSync(dir);
+		// Workflow-launched agents sit two levels deeper (subagents/workflows/wf_x/agent-y.jsonl),
+		// so this must walk the whole tree, not just the immediate children.
+		entries = readdirSync(dir, { recursive: true });
 	} catch {
 		return 0; // no subagents ran in this session
 	}
@@ -30,7 +32,9 @@ export function subagentCostSince(transcriptPath, since) {
 	let total = 0;
 
 	for (const entry of entries) {
-		if (!entry.startsWith("agent-") || !entry.endsWith(".jsonl")) continue;
+		// Nested entries come back as relative paths (e.g. "workflows/wf_x/agent-y.jsonl"), so the
+		// agent-prefix check must look at the basename, not the whole relative path.
+		if (!basename(entry).startsWith("agent-") || !entry.endsWith(".jsonl")) continue;
 
 		const path = join(dir, entry);
 		if (statSync(path).mtimeMs < sinceMs) continue;

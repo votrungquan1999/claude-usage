@@ -25,7 +25,8 @@ export function findTranscript({ projectsRoot, sessionId, cwd }) {
 	}
 
 	// No session id (invoked outside Claude Code): fall back to the newest transcript for cwd.
-	const slug = cwd.replaceAll("/", "-");
+	// Claude Code's real project dirs map '/', '.' and '_' all to '-' when building the slug.
+	const slug = cwd.replace(/[/._]/g, "-");
 	return newestTranscript(join(projectsRoot, slug));
 }
 

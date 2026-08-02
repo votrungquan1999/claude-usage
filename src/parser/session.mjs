@@ -17,7 +17,7 @@ export function sessionTotal(turns) {
  * @returns {number} USD per turn
  */
 export function carryCost(turns) {
-	const last = turns.at(-1);
+	const last = lastRealTurn(turns);
 	if (!last) return 0;
 
 	return (contextSize(turns) * inputPrice(last.model, last.timestamp) * CACHE_READ) / 1_000_000;
@@ -30,7 +30,7 @@ export function carryCost(turns) {
  * @returns {number} tokens
  */
 export function contextSize(turns) {
-	const last = turns.at(-1);
+	const last = lastRealTurn(turns);
 	if (!last) return 0;
 
 	// Everything the model re-read this turn — uncached, freshly cached, and cache hits.
@@ -40,4 +40,21 @@ export function contextSize(turns) {
 		last.usage.cache_creation_input_tokens +
 		last.usage.cache_read_input_tokens
 	);
+}
+
+/**
+ * The most recent turn that isn't an API-error placeholder.
+ *
+ * Claude Code appends an all-zero-usage `<synthetic>` turn after an API error (observed trailing
+ * runs up to 2 long), which would otherwise be read as "the last turn" right when the real
+ * context/cost matters most.
+ *
+ * @param {import("./dedupe.mjs").Turn[]} turns
+ * @returns {import("./dedupe.mjs").Turn|undefined}
+ */
+function lastRealTurn(turns) {
+	for (let i = turns.length - 1; i >= 0; i--) {
+		if (turns[i].model !== "<synthetic>") return turns[i];
+	}
+	return undefined;
 }

@@ -42,6 +42,25 @@ test("keeps the first record, which the tail reader deliberately drops", () => {
 	);
 });
 
+test("keeps a multi-byte UTF-8 record intact when it straddles the internal 1 MiB chunk boundary", () => {
+	// streamRecords reads in fixed 1 MiB chunks; a record's bytes can legitimately split across
+	// two reads. Line 1 is padded so the multi-byte record on line 2 starts exactly one byte
+	// before the boundary, splitting the emoji's 4-byte UTF-8 sequence across both chunks.
+	const CHUNK = 1 << 20;
+	const record = JSON.stringify({ s: "é🎯漢" });
+	const emojiByteOffset = Buffer.byteLength(record.slice(0, record.indexOf("🎯")));
+	const padLength = CHUNK - 2 - emojiByteOffset;
+
+	const dir = mkdtempSync(join(tmpdir(), "claude-usage-"));
+	const path = join(dir, "session.jsonl");
+	// Line 1 is deliberately not valid JSON — it's padding only, silently skipped on parse.
+	writeFileSync(path, `${"a".repeat(padLength)}\n${record}\n`);
+
+	const records = readAllRecords(path);
+
+	assert.deepEqual(records, [{ s: "é🎯漢" }]);
+});
+
 test("reads a multi-MB transcript fast enough to render every turn", () => {
 	// The status line runs on each render, so cost scales with the tail window, not the file.
 	const bulky = { type: "assistant", padding: "x".repeat(2_000) };

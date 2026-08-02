@@ -23,3 +23,19 @@ test("finds the session's transcript even when the shell has cd'd elsewhere", ()
 
 	assert.equal(found, join(sessionDir, "abc-123.jsonl"));
 });
+
+test("falls back to the cwd slug when no session id is given, mapping dots and underscores too", () => {
+	// No CLAUDE_CODE_SESSION_ID (invoked outside a running session): resolve by cwd alone.
+	// Claude Code's real project dirs map '.', '_' and '/' all to '-', not just '/'.
+	const projects = mkdtempSync(join(tmpdir(), "claude-usage-projects-"));
+	const sessionDir = join(projects, "-Users-me-wo-rk-dir");
+	mkdirSync(sessionDir, { recursive: true });
+	writeFileSync(join(sessionDir, "xyz-789.jsonl"), "");
+
+	const found = findTranscript({
+		projectsRoot: projects,
+		cwd: "/Users/me/wo.rk_dir",
+	});
+
+	assert.equal(found, join(sessionDir, "xyz-789.jsonl"));
+});
