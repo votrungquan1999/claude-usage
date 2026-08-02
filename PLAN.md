@@ -104,9 +104,10 @@ to persist, so correctness stops depending on the reader.
 
 ### Step 9: Turn a parsed session into storable events
 
-**AC:** A pure mapper takes deduped `Turn`s plus machine identity and returns `UsageEventDocument`s
-— cost computed at map time from the price effective at each message's timestamp, subagent turns
-flagged, 5m/1h cache tiers kept separate.
+**AC:** A pure mapper takes deduped `Turn`s, the machine id and the account ledger, and returns
+`UsageEventDocument`s — each event's account resolved from the ledger at *that turn's* timestamp,
+cost computed at map time from the price effective at that timestamp, subagent turns flagged, 5m/1h
+cache tiers kept separate.
 **Test type:** unit.
 
 Cost is frozen at write time on purpose: Sonnet 5's intro rate expires **2026-08-31**, and
@@ -114,10 +115,14 @@ computing at query time would silently reprice all pre-expiry history.
 
 ### Step 10: Accept usage over the network without exposing the database
 
-**AC:** `POST /api/sync` accepts `{ machineId, accountUuid, orgUuid, events[] }`, rejects a missing
-or wrong `x-claude-usage-secret` with 401 before touching Mongo, and returns a count. Re-posting
-the same batch changes nothing.
+**AC:** `POST /api/sync` accepts `{ machineId, events[] }` where **each event carries its own
+`accountUuid`/`orgUuid`**, rejects a missing or wrong `x-claude-usage-secret` with 401 before
+touching Mongo, and returns a count. Re-posting the same batch changes nothing.
 **Test type:** integration.
+
+Account is per-event, not per-batch: a single catch-up sync can span a work→personal switch, so a
+batch-level account field would restamp half the events wrong. Machine id stays batch-level — that
+genuinely cannot change mid-upload.
 
 Constant-time compare via `timingSafeEqual`, mirroring `AI-rules-repo`. The route self-guards on
 the header rather than relying on the edge proxy, so hooks keep working while pages stay gated.
