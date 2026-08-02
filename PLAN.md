@@ -230,8 +230,9 @@ back to that session's earliest known account.
 ## 5. Phase 2 shape
 
 ```
-POST /api/sync   { machineId, accountUuid, orgUuid, events: [...] }
-                 -> bulkWrite of upserts, $max on outputTokens
+POST /api/sync   { machineId, events: [...] }   # account is PER-EVENT, not per-batch
+                 -> bulkWrite of upserts, $max on token counts + cost,
+                    $setOnInsert on ownership fields
 GET  /api/stats  aggregation pipelines behind the session cookie
 ```
 
