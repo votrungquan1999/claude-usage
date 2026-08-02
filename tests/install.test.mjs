@@ -46,6 +46,41 @@ test("re-running is safe and keeps a copy of what it replaced", () => {
 	});
 });
 
+test("wires both hooks alongside the status line, preserving an unrelated existing hook entry", () => {
+	const home = fakeHome();
+	const settingsPath = join(home, ".claude", "settings.json");
+	writeFileSync(
+		settingsPath,
+		JSON.stringify({
+			hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "existing.mjs" }] }] },
+		}),
+	);
+
+	install({ home, repoRoot: "/opt/claude-usage" });
+
+	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+	const linkPath = join(home, ".claude", "claude-usage");
+
+	assert.deepEqual(settings.hooks.UserPromptSubmit, [
+		{ hooks: [{ type: "command", command: "existing.mjs" }] },
+		{ hooks: [{ type: "command", command: `node ${join(linkPath, "hooks", "user-prompt-submit.mjs")}` }] },
+	]);
+	assert.deepEqual(settings.hooks.SessionStart, [
+		{ hooks: [{ type: "command", command: `node ${join(linkPath, "hooks", "session-start.mjs")}` }] },
+	]);
+});
+
+test("re-running install() twice does not duplicate the hook entries", () => {
+	const home = fakeHome();
+
+	install({ home, repoRoot: "/opt/claude-usage" });
+	install({ home, repoRoot: "/opt/claude-usage" });
+
+	const settings = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
+	assert.equal(settings.hooks.UserPromptSubmit.length, 1);
+	assert.equal(settings.hooks.SessionStart.length, 1);
+});
+
 test("adds the status line without disturbing existing settings", () => {
 	// ~/.claude/settings.json is live config — hooks, permissions, MCP servers all live here.
 	const existing = {

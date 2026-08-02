@@ -36,8 +36,13 @@ export function install({ home, repoRoot }) {
 		copyFileSync(settingsPath, `${settingsPath}.backup-${new Date().toISOString()}`);
 	}
 
-	const command = `node ${join(linkPath, "bin", "statusline.mjs")}`;
-	writeFileSync(settingsPath, `${JSON.stringify(withStatusLine(existing.settings, command), null, 2)}\n`);
+	const statusLineCommand = `node ${join(linkPath, "bin", "statusline.mjs")}`;
+	const withStatus = withStatusLine(existing.settings, statusLineCommand);
+	const hookCommands = {
+		UserPromptSubmit: `node ${join(linkPath, "hooks", "user-prompt-submit.mjs")}`,
+		SessionStart: `node ${join(linkPath, "hooks", "session-start.mjs")}`,
+	};
+	writeFileSync(settingsPath, `${JSON.stringify(withHooks(withStatus, hookCommands), null, 2)}\n`);
 }
 
 /** Claude Code reads through a symlinked settings file, so patch the target, not the link. */
@@ -67,4 +72,28 @@ function readSettings(path) {
 export function withStatusLine(settings, command) {
 	// padding 0 removes Claude Code's default left indent, which wastes a column.
 	return { ...settings, statusLine: { type: "command", command, padding: 0 } };
+}
+
+/**
+ * Add or update this tool's own hook entries, leaving every other event and every other
+ * entry within an event alone.
+ *
+ * `settings.hooks.<Event>` is an array of groups that may already hold entries unrelated
+ * to this tool (a foreign `UserPromptSubmit` hook, say) — unlike `withStatusLine`'s single
+ * scalar key, a naive spread-and-append would duplicate this tool's own entry on every
+ * `install()` re-run. Instead, match-and-replace by command string: it's deterministic,
+ * since the command is always `node <linkPath>/hooks/<name>.mjs`.
+ *
+ * @param {object} settings - parsed ~/.claude/settings.json
+ * @param {Record<string, string>} commands - event name -> this tool's own command for it
+ * @returns {object} a new settings object
+ */
+export function withHooks(settings, commands) {
+	const hooks = { ...settings.hooks };
+	for (const [event, command] of Object.entries(commands)) {
+		const group = { hooks: [{ type: "command", command }] };
+		const existingGroups = (hooks[event] ?? []).filter((g) => g.hooks?.[0]?.command !== command);
+		hooks[event] = [...existingGroups, group];
+	}
+	return { ...settings, hooks };
 }
