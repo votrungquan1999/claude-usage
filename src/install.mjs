@@ -65,5 +65,6 @@ function readSettings(path) {
  * @returns {object} a new settings object
  */
 export function withStatusLine(settings, command) {
-	return { ...settings, statusLine: { type: "command", command } };
+	// padding 0 removes Claude Code's default left indent, which wastes a column.
+	return { ...settings, statusLine: { type: "command", command, padding: 0 } };
 }

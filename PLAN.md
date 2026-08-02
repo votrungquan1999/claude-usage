@@ -141,9 +141,49 @@ Dropped from #118: the `~/.claude/usage-data/session-meta/*.json` join. That dir
 
 ---
 
-## 4. Open questions (blocking Phase 2 only)
+## 4. Decisions taken for Phase 2
 
-1. **DB host** — recommend a **new dedicated Supabase project**. MCP already wired; Postgres-over-REST means sync is a plain `fetch` with no client library on either machine; RLS keeps it private. Alternatives: reuse mainnet/testnet (mixes personal telemetry into an unrelated project), or Neon via personal-infra Pulumi (consistent with existing IaC but needs a PR/deploy cycle, and free tier caps retention at 6h).
-2. **Account topology** — same Anthropic account on both machines, or is one work? Recommend modelling `account_uuid` as a first-class column either way, so adding a work account later needs no migration.
+**DB host — MongoDB Atlas, the existing shared cluster.** Add `claude-usage` to `DATABASES` in
+`personal-infra/resources/mongodb-atlas.ts`, which provisions a scoped `claude-usage-app` user on
+the `personal-shared` M0 cluster (AWS Singapore, co-located with Vercel `sin1`) and emits a
+connection string. That file's own comment describes this exact case — "one cluster, a database
++ user per app". A telemetry sidecar does not justify its own Atlas project. Infra lands via PR,
+never a local `pulumi up`.
 
-Neither blocks Phase 1.
+**Deployment — this repo becomes a Next.js app on Vercel**, serving both the sync API and the
+dashboard. The zero-dep `src/parser/`, `bin/`, `hooks/` and `scripts/` stay exactly as they are;
+Next.js only adds `src/app/`.
+
+**Auth — one shared secret, two carriers**, mirroring `AI-rules-repo`:
+
+- Machines send `x-claude-usage-secret` on `POST /api/sync`.
+- The browser posts the secret once to `/api/auth`, which sets an httpOnly `session` cookie whose
+  value *is* the secret; an edge proxy gates the dashboard by comparing that cookie.
+- Constant-time `timingSafeEqual` in the node runtime; the edge proxy uses plain `===` because
+  `node:crypto` is unavailable there. The proxy only guards pages — `/api/sync` self-guards on the
+  header so the hooks keep working.
+
+**UI — shadcn with Base UI** (the default since 2026-07), style `base-nova`, `neutral` base colour,
+dark-first since it is a data dashboard.
+
+**Account topology — still unanswered, and deliberately not blocking.** `accountUuid` is modelled
+as a first-class field regardless, so adding a work account later needs no migration.
+
+## 5. Phase 2 shape
+
+```
+POST /api/sync   { machineId, accountUuid, orgUuid, events: [...] }
+                 -> bulkWrite of upserts, $max on outputTokens
+GET  /api/stats  aggregation pipelines behind the session cookie
+```
+
+**Why an API rather than the machines talking to Mongo directly:** the hooks then hold only an
+opaque app token, not database credentials. A leaked token can write usage rows; a leaked
+connection string can drop collections. It also keeps the Mongo driver out of the zero-dep half.
+
+**Mongo equivalents of the locked SQL rules:**
+
+- PK `(requestId, messageId)` becomes a unique compound index and the upsert filter.
+- The self-healing `GREATEST` becomes `{ $max: { outputTokens: … } }` — same guarantee, so a row
+  written from a partial streaming record is corrected upward by any later sync.
+- `bulkWrite(..., { ordered: false })` so one bad event cannot block the batch.

@@ -104,6 +104,42 @@ by merge, never rewrite, backing up first, and follows the file if it is itself 
 
 **Verified live:** report reads this session's 3MB transcript in 78ms — 242 turns, $53.34.
 
+---
+
+## Phase 2 — Sync
+
+### Step 8: Store usage so a re-sync can never corrupt what is already there
+
+**Status:** 🔄 In Progress — store done, API/hooks/backfill outstanding
+
+**Tests Written (2 tests, all passing ✅):**
+
+1. ✅ A re-sync can only raise an output count, never lower it
+2. ✅ Two machines racing on the same message cannot create a duplicate row
+
+**Decisions made this step:**
+
+- **MongoDB Atlas, shared cluster.** `claude-usage` gets a scoped user on the existing
+  `personal-shared` M0 (AWS Singapore, co-located with Vercel `sin1`) via
+  `personal-infra/resources/mongodb-atlas.ts`. That file's comment describes this exact case.
+  A telemetry sidecar does not justify its own Atlas project. **Infra lands via PR, never a
+  local `pulumi up`.**
+- **Machines talk to an API, not to Mongo.** The hooks then hold an opaque app token rather than
+  database credentials — a leaked token writes junk rows, a leaked connection string drops
+  collections. It also keeps the Mongo driver out of the zero-dep half.
+- **`$max`, not `$set`, on `outputTokens` and `costUsd`.** This is the Mongo equivalent of the
+  planned `GREATEST` upsert: a partial streaming count becomes impossible to persist, so
+  correctness no longer depends on the reader being right.
+- **Two test runners, one per half.** `node:test` for the zero-dep parser/CLI, `vitest` +
+  `mongodb-memory-server` for the server. Integration tests run against a real `mongod` (reusing
+  the homebrew binary) rather than a mocked driver — upsert semantics are the thing under test
+  and a mock would prove nothing.
+
+**Still to build in Phase 2:** event mapping from parser `Turn` to `UsageEventDocument`,
+`POST /api/sync` with the shared-secret guard, the two hooks, and the backfill script.
+
+---
+
 **Note on strict TDD:** the installer's backup and idempotency were written alongside the first
 installer test rather than driven by their own failing test, so test 3 was green on first run.
 Tests 5 and 6 in Steps 2-4, and test 5 here, were likewise green from the start (trivial

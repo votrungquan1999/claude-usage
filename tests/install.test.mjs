@@ -23,6 +23,7 @@ test("links the repo to a stable path and wires the status line", () => {
 	assert.deepEqual(settings.statusLine, {
 		type: "command",
 		command: `node ${join(home, ".claude", "claude-usage", "bin", "statusline.mjs")}`,
+		padding: 0,
 	});
 });
 
@@ -57,6 +58,6 @@ test("adds the status line without disturbing existing settings", () => {
 	assert.deepEqual(updated, {
 		hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "existing.mjs" }] }] },
 		model: "opus",
-		statusLine: { type: "command", command: "node /opt/claude-usage/bin/statusline.mjs" },
+		statusLine: { type: "command", command: "node /opt/claude-usage/bin/statusline.mjs", padding: 0 },
 	});
 });
