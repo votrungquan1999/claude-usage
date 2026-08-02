@@ -92,42 +92,75 @@ Build **only if step 6 proves insufficient in daily use.** Thin wrapper shelling
 
 ## Phase 2 — Sync (card #118)
 
-### Step 8: Decide where the data lives, then define the schema
+### Step 8: Store usage so a re-sync can never corrupt what is already there ✅ DONE
 
-**AC:** Migration applied; `usage_events` PK `(request_id, message_id)`; `machine_id` / `account_uuid` / `org_uuid` / `is_subagent` columns; self-healing upsert with `greatest(...)` on `output_tokens`; separate effective-dated `pricing` table.
-**Test type:** integration against the real DB.
+**AC:** `usage_events` keyed on `(requestId, messageId)` with a unique index; upsert uses `$max` on
+`outputTokens` and `costUsd`; identity (`machineId`, `accountUuid`, `orgUuid`) and `isSubagent`
+stored; time/machine/project indexes for the dashboard.
+**Test type:** integration against a real `mongod`.
 
-**Blocked on two open questions — see §4.**
+`$max` is the Mongo form of the planned `GREATEST` — a partial streaming count becomes impossible
+to persist, so correctness stops depending on the reader.
 
-### Step 9: Get one machine's usage into the DB
+### Step 9: Turn a parsed session into storable events
 
-**AC:** `sync.mjs` uploads aggregates only, stamps identity from `~/.claude.json`, computes `cost_usd` at sync time using the price effective at each message's timestamp, and re-running it changes nothing.
+**AC:** A pure mapper takes deduped `Turn`s plus machine identity and returns `UsageEventDocument`s
+— cost computed at map time from the price effective at each message's timestamp, subagent turns
+flagged, 5m/1h cache tiers kept separate.
+**Test type:** unit.
+
+Cost is frozen at write time on purpose: Sonnet 5's intro rate expires **2026-08-31**, and
+computing at query time would silently reprice all pre-expiry history.
+
+### Step 10: Accept usage over the network without exposing the database
+
+**AC:** `POST /api/sync` accepts `{ machineId, accountUuid, orgUuid, events[] }`, rejects a missing
+or wrong `x-claude-usage-secret` with 401 before touching Mongo, and returns a count. Re-posting
+the same batch changes nothing.
 **Test type:** integration.
 
-**Aggregates only — transcripts never leave the machine.** The JSONL holds source code, file contents, and every tool result. Only per-message token counts ship.
+Constant-time compare via `timingSafeEqual`, mirroring `AI-rules-repo`. The route self-guards on
+the header rather than relying on the edge proxy, so hooks keep working while pages stay gated.
 
-### Step 10: Keep it fresh without a scheduler
+### Step 11: Keep it fresh without a scheduler
 
-**AC:** `SessionStart` syncs inline; `UserPromptSubmit` writes a dirty marker and returns in <10ms with a genuinely detached upload; both fail silently.
+**AC:** `SessionStart` syncs inline; `UserPromptSubmit` writes a dirty marker and returns in <10ms
+with a genuinely detached upload; both fail silently.
 **Test type:** integration + a latency assertion.
 
-Detach must be `spawn(..., {detached:true, stdio:'ignore'}).unref()` — `& disown` is not enough, Claude Code can wait on inherited fds.
+Detach must be `spawn(..., {detached:true, stdio:'ignore'}).unref()` — `& disown` is not enough,
+Claude Code can wait on inherited fds.
 
-### Step 11: Bring in the existing history
+### Step 12: Bring in the existing history
 
-**AC:** `backfill.mjs` walks all history (~46K rows, ~$5.9K) through the same parser and upsert; safe to re-run.
+**AC:** `backfill.mjs` walks all history (~46K events) through the same parser, mapper and endpoint;
+safe to re-run; batched so one request never carries the whole history.
 **Test type:** integration.
 
 ---
 
 ## Phase 3 — Dashboard (card #118)
 
-### Step 12: See spend broken down the ways that drive decisions
+### Step 13: Get into the dashboard, and keep everyone else out
 
-**AC:** Cost per day / machine / project / model; subagent share over time; cache read-vs-write efficiency; session drill-down.
-**Test type:** unit on query layer + e2e on the views.
+**AC:** `/login` posts the secret to `/api/auth`, which sets an httpOnly `session` cookie on a
+constant-time match; an edge proxy redirects unauthenticated page requests to `/login`.
+**Test type:** integration.
 
-Dropped from #118: the `~/.claude/usage-data/session-meta/*.json` join. That directory **no longer exists** (verified 2026-08-01) — it was a one-off snapshot, not a live feed.
+The edge proxy compares with plain `===` — `node:crypto` is unavailable in the edge runtime. The
+constant-time compare guards *issuing* the cookie, which is the step that matters.
+
+### Step 14: See spend broken down the ways that drive decisions
+
+**AC:** Cost per day / machine / project / model; subagent share over time; cache read-vs-write
+efficiency; session drill-down. Aggregation runs in Mongo, not in the page.
+**Test type:** unit on the aggregation layer + e2e on the views.
+
+UI is shadcn on **Base UI** (its default since 2026-07), style `base-nova`, `neutral` base colour,
+dark-first.
+
+Dropped from #118: the `~/.claude/usage-data/session-meta/*.json` join. That directory **no longer
+exists** (verified 2026-08-01) — it was a one-off snapshot, not a live feed.
 
 ---
 
