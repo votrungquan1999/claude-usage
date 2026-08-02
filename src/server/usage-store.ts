@@ -1,4 +1,4 @@
-import type { Db } from "mongodb";
+import type { Db, ObjectId } from "mongodb";
 
 /** Name of the collection holding one row per assistant message. */
 export const USAGE_EVENTS_COLLECTION = "usage_events";
@@ -8,7 +8,9 @@ export const USAGE_EVENTS_COLLECTION = "usage_events";
  * ever reaches this collection.
  */
 export interface UsageEventDocument {
-	_id?: unknown;
+	// Typed as ObjectId rather than unknown: the driver's insert signature demands it,
+	// and `unknown` makes every insertOne on this collection a type error.
+	_id?: ObjectId;
 	requestId: string;
 	messageId: string;
 	sessionId: string;
