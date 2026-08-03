@@ -15,6 +15,7 @@ import {
 	RangeFallbackNotice,
 } from "./dashboard-shell.ui";
 import { CacheSavingsView } from "./efficiency/cache-savings-view";
+import { ModelMixView } from "./efficiency/model-mix-view";
 import { SubagentShareView } from "./efficiency/subagent-share-view";
 import { KpiCards } from "./kpi-cards/kpi-cards";
 import { RANGE_PRESET_LABELS, RangePresetOptions } from "./range-picker/range-picker";
@@ -119,6 +120,24 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 						<CardErrorBoundary fallback={<CardErrorNotice>This card could not be loaded</CardErrorNotice>}>
 							<Suspense fallback={<CardPlaceholder />}>
 								<CacheSavingsView fromMs={fromMs} toMs={toMs} />
+							</Suspense>
+						</CardErrorBoundary>
+					</CardContent>
+				</Card>
+
+				<Card>
+					<CardHeader>
+						<CardTitle>Model mix over time</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<CardErrorBoundary fallback={<CardErrorNotice>This card could not be loaded</CardErrorNotice>}>
+							<Suspense fallback={<CardPlaceholder />}>
+								<ModelMixView
+									fromMs={fromMs}
+									toMs={toMs}
+									domainFromMs={colorDomain.fromMs}
+									domainToMs={colorDomain.toMs}
+								/>
 							</Suspense>
 						</CardErrorBoundary>
 					</CardContent>

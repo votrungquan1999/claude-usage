@@ -75,7 +75,10 @@ export function rankDimensionTotals(rows: DailyCostByDimensionRow[]): DimensionT
 		}
 	}
 
-	return [...totals.values()].sort((a, b) => b.costUsd - a.costUsd);
+	// D38 — the tie-break is not cosmetic: the Model tab and the model-mix chart rank the same
+	// data through this function and must agree, and a tied row under pagination can otherwise
+	// appear on two pages or on none.
+	return [...totals.values()].sort((a, b) => b.costUsd - a.costUsd || a.dimensionValue.localeCompare(b.dimensionValue));
 }
 
 /**
@@ -569,6 +572,72 @@ export function summarizeMonthToDate(rows: DailyEfficiencyRow[], todayKey: strin
 		monthCostUsd: rows.reduce((sum, row) => sum + row.totalCostUsd, 0),
 		monthUnpricedEventCount: rows.reduce((sum, row) => sum + row.unpricedEventCount, 0),
 	};
+}
+
+/** How many dimension values get their own series before the rest fold into "Other" — the chart
+ * palette has exactly this many usable slots. Shared so the Model tab and the model-mix chart cap
+ * at the same point and cannot disagree about which names exist (D39). */
+export const TOP_SERIES_COUNT = 5;
+
+/** The bucket every model outside the top N folds into. Spelled once so the mix chart and the
+ * Model tab cannot drift apart on it. */
+export const OTHER_SERIES_KEY = "Other";
+
+/** One day's model mix: each shown model's share of that day's priced spend. */
+export interface ModelMixDayRow {
+	day: string;
+	/** Events recorded — what distinguishes a gap-filled day from a real zero (D24). */
+	totalEventCount: number;
+	/** Share 0-1 per model, or `null` on a day with no priced spend at all: a share of nothing is
+	 * undefined, and a flat zero would read as "these models were not used" (D39). */
+	[modelKey: string]: number | string | null;
+}
+
+/**
+ * A model-mix row for a day with no recorded work (D24) — carries no model keys at all, so every
+ * series breaks across it rather than dropping to zero.
+ *
+ * @param day - `YYYY-MM-DD`
+ */
+export function emptyModelMixRow(day: string): ModelMixDayRow {
+	return { day, totalEventCount: 0 };
+}
+
+/**
+ * Each day's model mix as a share of that day's PRICED spend (D27/D39) — the genuinely new
+ * information next to the Model tab, which already shows absolute dollars: a deliberate shift to
+ * a cheaper model shows up even in a week when the total moved too.
+ *
+ * Models outside `topModels` fold into "Other", exactly as the Model tab caps them, so the two
+ * surfaces never disagree about which names exist or what colour they are.
+ *
+ * @param rows - per-day, per-model rows over the window
+ * @param topModels - the models with their own series, already capped and ranked
+ */
+export function modelMixByDay(rows: DailyEfficiencyByModelRow[], topModels: string[]): ModelMixDayRow[] {
+	const topSet = new Set(topModels);
+	const byDay = new Map<string, { totalCostUsd: number; totalEventCount: number; costByKey: Map<string, number> }>();
+
+	for (const row of rows) {
+		const day = byDay.get(row.day) ?? { totalCostUsd: 0, totalEventCount: 0, costByKey: new Map() };
+		const key = topSet.has(row.model) ? row.model : OTHER_SERIES_KEY;
+		day.totalCostUsd += row.totalCostUsd;
+		day.totalEventCount += row.totalEventCount;
+		day.costByKey.set(key, (day.costByKey.get(key) ?? 0) + row.totalCostUsd);
+		byDay.set(row.day, day);
+	}
+
+	return [...byDay.entries()]
+		.map(([day, totals]) => {
+			const mixRow: ModelMixDayRow = { day, totalEventCount: totals.totalEventCount };
+			for (const [key, costUsd] of totals.costByKey) {
+				// A day can have events but no PRICED spend, so the denominator is checked per day
+				// rather than assumed from the row's existence.
+				mixRow[key] = totals.totalCostUsd === 0 ? null : costUsd / totals.totalCostUsd;
+			}
+			return mixRow;
+		})
+		.sort((a, b) => a.day.localeCompare(b.day));
 }
 
 /** One day's cache savings in dollars (D12). */

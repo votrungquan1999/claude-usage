@@ -9,6 +9,7 @@ import {
 	formatInstantInTimezone,
 	formatLowerBoundCost,
 	formatSavingsStatement,
+	modelMixByDay,
 	monthProgressInTimezone,
 	projectMonthEndCost,
 	rollUpDailySavings,
@@ -442,4 +443,54 @@ test("formatSavingsStatement reads a negative net as a cost, never as a negative
 	expect(formatSavingsStatement(28.5)).toBe("Caching saved $28.50");
 	// Not "saved $-1.98", which also puts the sign in the wrong place.
 	expect(formatSavingsStatement(-1.98)).toBe("Caching cost $1.98 more than it saved");
+});
+
+test("rankDimensionTotals breaks a cost tie by name, so two surfaces ranking the same data agree (D38)", () => {
+	// Without a tie-break the order depends on insertion order, which differs between the Model tab
+	// and the model-mix chart — and with pagination a tied row can appear twice or not at all.
+	const totals = rankDimensionTotals([
+		{ day: "2026-08-01", dimensionValue: "zeta", costUsd: 5, unpricedEventCount: 0, eventCount: 1 },
+		{ day: "2026-08-01", dimensionValue: "alpha", costUsd: 5, unpricedEventCount: 0, eventCount: 1 },
+	]);
+
+	expect(totals.map((total) => total.dimensionValue)).toEqual(["alpha", "zeta"]);
+});
+
+test("modelMixByDay reports each model's share of that day's spend, summing to the whole day", () => {
+	const rows = modelMixByDay(
+		[
+			savingsModelRow({ day: "2026-08-01", model: "claude-opus-5", totalCostUsd: 75, totalEventCount: 3 }),
+			savingsModelRow({ day: "2026-08-01", model: "claude-haiku-4-5", totalCostUsd: 25, totalEventCount: 1 }),
+		],
+		["claude-opus-5", "claude-haiku-4-5"],
+	);
+
+	expect(rows).toEqual([
+		{ day: "2026-08-01", totalEventCount: 4, "claude-opus-5": 0.75, "claude-haiku-4-5": 0.25 },
+	]);
+});
+
+test("modelMixByDay folds a model outside the top set into Other, matching the Model tab's cap", () => {
+	const rows = modelMixByDay(
+		[
+			savingsModelRow({ day: "2026-08-01", model: "claude-opus-5", totalCostUsd: 60, totalEventCount: 2 }),
+			savingsModelRow({ day: "2026-08-01", model: "claude-fable-5", totalCostUsd: 40, totalEventCount: 1 }),
+		],
+		["claude-opus-5"],
+	);
+
+	expect(rows[0]["claude-opus-5"]).toBe(0.6);
+	expect(rows[0].Other).toBe(0.4);
+	expect(rows[0]["claude-fable-5"]).toBeUndefined();
+});
+
+test("a day with events but no priced spend has no defined mix, so it breaks rather than reading as zero (D39)", () => {
+	// Every event that day was unpriced: the models WERE used, so a flat zero would be a lie.
+	const rows = modelMixByDay(
+		[savingsModelRow({ day: "2026-08-01", model: "claude-opus-5", totalCostUsd: 0, totalEventCount: 4, unpricedEventCount: 4 })],
+		["claude-opus-5"],
+	);
+
+	expect(rows[0]["claude-opus-5"]).toBeNull();
+	expect(rows[0].totalEventCount).toBe(4);
 });

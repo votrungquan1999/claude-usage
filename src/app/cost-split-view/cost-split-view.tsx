@@ -4,6 +4,7 @@ import {
 	assignSeriesColorSlots,
 	dayKeyInTimezone,
 	fillMissingDays,
+	TOP_SERIES_COUNT,
 	pivotForChart,
 	rankDimensionTotals,
 	summarizeUnpricedDays,
@@ -25,8 +26,6 @@ function unpricedRangeMessage(dayCount: number, eventCount: number): string | nu
 	const eventNoun = eventCount === 1 ? "event" : "events";
 	return `${dayCount} ${dayNoun} in this range include ${eventCount} unpriced ${eventNoun} — totals are a lower bound`;
 }
-
-const TOP_SERIES_COUNT = 5;
 
 /** Fallback colour for a totals-table row that isn't one of the chart's top-N series — it's part
  * of the chart's "Other" bucket, so its swatch must read as the same bucket, not its own hue. */
