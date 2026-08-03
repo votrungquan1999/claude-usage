@@ -6,12 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+export interface LoginFormProps {
+	/** Where to land after signing in — already validated as a same-origin path by the page (D43).
+	 * This component must not widen it. */
+	returnPath: string;
+}
+
 /**
  * Posts the operator's shared secret to `/api/auth`. On success, forces a full page load so
  * the httpOnly session cookie the browser just received is present on the request the proxy
- * evaluates — a client-side transition (`router.push`) cannot guarantee that.
+ * evaluates — a client-side transition (`router.push`) cannot guarantee that. That reload goes
+ * back to whatever view the expired session interrupted, rather than always to the root.
  */
-export function LoginForm(): React.JSX.Element {
+export function LoginForm({ returnPath }: LoginFormProps): React.JSX.Element {
 	const [secret, setSecret] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [submitting, setSubmitting] = useState(false);
@@ -28,7 +35,7 @@ export function LoginForm(): React.JSX.Element {
 		});
 		setSubmitting(false);
 		if (response.ok) {
-			window.location.href = "/";
+			window.location.href = returnPath;
 			return;
 		}
 		setError("Incorrect secret. Please try again.");
