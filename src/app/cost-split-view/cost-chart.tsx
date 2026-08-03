@@ -13,13 +13,15 @@ import {
 
 import type { ChartDayRow } from "../dashboard-format";
 
-/** The chart palette's 5 usable slots (Step 19's "neutral" base colour, fixed — not hand-edited). */
-const SERIES_COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
+import type { SeriesColorMap } from "./cost-split-view.type";
 
 export interface CostChartProps {
 	data: ChartDayRow[];
 	/** Dimension values with their own series, in rank order — the caller caps this to 5. */
 	seriesKeys: string[];
+	/** Each series key's stable colour (D21), assigned by `assignSeriesColorSlots` from a
+	 * range-independent domain ordering — never derived from `seriesKeys`' own rank order. */
+	colors: SeriesColorMap;
 }
 
 /** One tick label per day; days carrying unpriced spend (D17) get a trailing `*` and a distinct
@@ -50,15 +52,15 @@ function DayTick(unpricedDays: Set<string>) {
  * carrying unpriced spend (D17) get a marked x-axis tick and, if any exist, a caption — a
  * zero-height bar must never look identical to a day with no work at all.
  */
-export function CostChart({ data, seriesKeys }: CostChartProps): React.JSX.Element {
+export function CostChart({ data, seriesKeys, colors }: CostChartProps): React.JSX.Element {
 	const hasOther = data.some((row) => "Other" in row);
 	const ids = seriesKeys.map((_, index) => `s${index}`);
 
 	const config: ChartConfig = {};
 	seriesKeys.forEach((key, index) => {
-		config[ids[index]] = { label: key, color: SERIES_COLORS[index % SERIES_COLORS.length] };
+		config[ids[index]] = { label: key, color: colors[key] };
 	});
-	if (hasOther) config.other = { label: "Other", color: "var(--muted-foreground)" };
+	if (hasOther) config.other = { label: "Other", color: "var(--chart-other)" };
 
 	const chartData = data.map((row) => {
 		const mapped: Record<string, string | number> = { day: row.day };
@@ -74,9 +76,7 @@ export function CostChart({ data, seriesKeys }: CostChartProps): React.JSX.Eleme
 
 	if (data.length === 0) {
 		return (
-			<div className="flex h-64 w-full items-center justify-center text-sm text-muted-foreground">
-				No data in this range
-			</div>
+			<div className="grid h-64 w-full place-items-center text-sm text-muted-foreground">No data in this range</div>
 		);
 	}
 

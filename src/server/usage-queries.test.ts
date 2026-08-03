@@ -3,7 +3,14 @@ import { type Db, MongoClient } from "mongodb";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
 import { USAGE_EVENTS_COLLECTION, ensureUsageIndexes, saveUsageEvents, type UsageEventDocument } from "./usage-store";
-import { CostSplitDimension, costPerDay, dailyEfficiency, getSessionBreakdown, type DateRange } from "./usage-queries";
+import {
+	CostSplitDimension,
+	costPerDay,
+	dailyEfficiency,
+	dimensionValueDomain,
+	getSessionBreakdown,
+	type DateRange,
+} from "./usage-queries";
 
 let server: MongoMemoryServer;
 let client: MongoClient;
@@ -370,6 +377,75 @@ test("a null projectSlug (a rogue/older client bypassing the mapper's allowlist)
 
 	expect(rows.some((row) => row.dimensionValue === null)).toBe(false);
 	expect(rows.find((row) => row.costUsd === 1)?.dimensionValue).toBe("(unattributed)");
+});
+
+test("dimensionValueDomain orders dimension values by cost descending over the lookback range (D21)", async () => {
+	const range = dayRange("2026-08-10");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_domain_a", messageId: "msg_domain_a", machineId: "small-mac", timestamp: range.from, costUsd: 1 }),
+		event({ requestId: "req_domain_b", messageId: "msg_domain_b", machineId: "big-mac", timestamp: range.from, costUsd: 5 }),
+	]);
+
+	const domain = await dimensionValueDomain(db, CostSplitDimension.Machine, range);
+
+	expect(domain.indexOf("big-mac")).toBeLessThan(domain.indexOf("small-mac"));
+});
+
+test("dimensionValueDomain breaks a cost tie alphabetically (D21)", async () => {
+	const range = dayRange("2026-08-11");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_tie_b", messageId: "msg_tie_b", machineId: "b-mac", timestamp: range.from, costUsd: 2 }),
+		event({ requestId: "req_tie_a", messageId: "msg_tie_a", machineId: "a-mac", timestamp: range.from, costUsd: 2 }),
+	]);
+
+	const domain = await dimensionValueDomain(db, CostSplitDimension.Machine, range);
+
+	expect(domain.indexOf("a-mac")).toBeLessThan(domain.indexOf("b-mac"));
+});
+
+test("dimensionValueDomain merges raw model variants that normalize to the same model, like costPerDay does (D21)", async () => {
+	const range = dayRange("2026-08-12");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_domain_variant_a", messageId: "msg_domain_variant_a", timestamp: range.from, model: "claude-opus-5", costUsd: 1 }),
+		event({
+			requestId: "req_domain_variant_b",
+			messageId: "msg_domain_variant_b",
+			timestamp: range.from,
+			model: "claude-opus-5[1m]",
+			costUsd: 2,
+		}),
+	]);
+
+	const domain = await dimensionValueDomain(db, CostSplitDimension.Model, range);
+
+	expect(domain.filter((value) => value === "claude-opus-5")).toHaveLength(1);
+});
+
+test("dimensionValueDomain rolls up project rows sharing a repoKey, like costPerDay does (D21/D20)", async () => {
+	const range = dayRange("2026-08-13");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_domain_repo_main",
+			messageId: "msg_domain_repo_main",
+			timestamp: range.from,
+			projectSlug: "personal/ccp",
+			repoKey: "hash-ccp-domain",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_domain_repo_worktree",
+			messageId: "msg_domain_repo_worktree",
+			timestamp: range.from,
+			projectSlug: "personal/ccp-notification-system",
+			repoKey: "hash-ccp-domain",
+			costUsd: 2,
+		}),
+	]);
+
+	const domain = await dimensionValueDomain(db, CostSplitDimension.Project, range);
+
+	expect(domain.includes("personal/ccp")).toBe(true);
+	expect(domain.includes("personal/ccp-notification-system")).toBe(false);
 });
 
 test("a session that switched accounts mid-session reports its first chronological account (deliberate default)", async () => {

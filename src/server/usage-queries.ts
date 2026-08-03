@@ -363,6 +363,60 @@ export async function costPerDay(
 	return dimensionRows.map(dropRepoKey);
 }
 
+/** `mergeByNormalizedDimension`/`mergeProjectRowsByRepoKey` key their dedup `Map` on `row.day`,
+ * so reusing them for this day-less aggregation needs every row to carry the SAME constant day —
+ * folding every row into one merge bucket per dimensionValue/repoKey, exactly like a real day
+ * would. Never compared against a real `YYYY-MM-DD` day string. */
+const COLOR_DOMAIN_SENTINEL_DAY = "__color-domain__";
+
+/**
+ * A dimension's value domain, ordered range-independently (D21): cost descending over
+ * `lookbackRange`, alphabetical tie-break. Feeds `assignSeriesColorSlots` in `dashboard-format.ts`
+ * so a value's chart colour depends on this fixed-lookback ranking, never on the currently
+ * selected window's rank — the fix for colours repainting when the window changes. Runs the same
+ * post-`$group` merges as `costPerDay` (normalized model, repoKey-grouped project) so the ordering
+ * key matches the POST-merge `dimensionValue` the chart actually renders.
+ *
+ * @param db - the connected database
+ * @param dimension - which stored field to rank
+ * @param lookbackRange - a wide, fixed bound (365 days) so the ordering is stable across window changes
+ */
+export async function dimensionValueDomain(db: Db, dimension: CostSplitDimension, lookbackRange: DateRange): Promise<string[]> {
+	const rows = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.aggregate<RawDimensionRow>([
+			{ $match: { timestamp: { $gte: lookbackRange.from, $lte: lookbackRange.to } } },
+			{
+				$group: {
+					_id: { day: COLOR_DOMAIN_SENTINEL_DAY, dimensionValue: `$${dimension}` },
+					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
+					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
+					eventCount: { $sum: 1 },
+					repoKey: { $first: "$repoKey" },
+				},
+			},
+		])
+		.toArray();
+
+	const dimensionRows: DimensionRowWithRepoKey[] = rows.map((row) => ({
+		day: row._id.day,
+		dimensionValue: row._id.dimensionValue ?? UNATTRIBUTED_DIMENSION_VALUE,
+		costUsd: row.costUsd,
+		unpricedEventCount: row.unpricedEventCount,
+		eventCount: row.eventCount,
+		repoKey: row.repoKey,
+	}));
+
+	let merged: DimensionRowWithRepoKey[];
+	if (dimension === CostSplitDimension.Model) merged = mergeByNormalizedDimension(dimensionRows);
+	else if (dimension === CostSplitDimension.Project) merged = mergeProjectRowsByRepoKey(dimensionRows);
+	else merged = dimensionRows;
+
+	return merged
+		.sort((a, b) => b.costUsd - a.costUsd || a.dimensionValue.localeCompare(b.dimensionValue))
+		.map((row) => row.dimensionValue);
+}
+
 /** Label for a row whose grouping field was missing/null at ingest — a rogue or older client can
  * post an event without it (D7 gives the account dimension the same "unattributed" treatment). */
 const UNATTRIBUTED_DIMENSION_VALUE = "(unattributed)";

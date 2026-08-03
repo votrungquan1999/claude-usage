@@ -6,20 +6,21 @@ import {
 	DASHBOARD_TIMEZONE,
 	costPerDay,
 	dailyEfficiency,
-	type DailyCostByDimensionRow,
+	dimensionValueDomain,
 	type DateRange,
 } from "@/server/usage-queries";
 
-import { CostChart } from "./cost-split-view/cost-chart";
-import { DimensionTotalsTable } from "./cost-split-view/dimension-totals-table";
-import { pivotForChart, rankDimensionTotals, startOfDayInTimezone } from "./dashboard-format";
+import { CostSplitView } from "./cost-split-view/cost-split-view";
+import { startOfDayInTimezone } from "./dashboard-format";
 import { CacheEfficiencyChart } from "./efficiency/cache-efficiency-chart";
 import { SubagentShareChart } from "./efficiency/subagent-share-chart";
 import { SessionLookupForm } from "./session-lookup-form";
 import { SignOutButton } from "./sign-out-button";
 
 const RANGE_DAYS = 30;
-const TOP_SERIES_COUNT = 5;
+/** D21/D41 — the colour domain looks back further than any window this run's UI can select yet,
+ * so a value's slot never depends on the currently selected window. */
+const COLOR_DOMAIN_LOOKBACK_DAYS = 365;
 
 /**
  * The dashboard's default window — every query here carries a bounded `{from, to}` range so
@@ -35,42 +36,34 @@ function defaultRange(): DateRange {
 }
 
 /**
- * One cost-per-day split view: a stacked bar chart capped to the top 5 dimension values plus
- * "Other", and the exact per-dimension totals table below it.
+ * The colour-domain lookback (D21) — a fixed, wide window independent of the operator's selected
+ * range, so a value's chart colour never changes when the selected window changes.
  */
-function CostSplitView({
-	rows,
-	dimensionLabel,
-}: {
-	rows: DailyCostByDimensionRow[];
-	dimensionLabel: string;
-}): React.JSX.Element {
-	const totals = rankDimensionTotals(rows);
-	const topValues = totals.slice(0, TOP_SERIES_COUNT).map((total) => total.dimensionValue);
-	const chartData = pivotForChart(rows, topValues);
-
-	return (
-		<div className="grid gap-4 pt-4">
-			<CostChart data={chartData} seriesKeys={topValues} />
-			<DimensionTotalsTable totals={totals} dimensionLabel={dimensionLabel} />
-		</div>
-	);
+function colorDomainLookback(): DateRange {
+	const to = new Date();
+	const from = new Date(to.getTime() - COLOR_DOMAIN_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+	return { from, to };
 }
 
 /**
  * Dashboard root (Steps 19-20). Gated by `src/proxy.ts`. Fetches cost-per-day split by
  * machine/project/model, subagent cost share, and cache read-vs-write efficiency, all over the
- * same bounded default range.
+ * same bounded default range, plus each split dimension's colour domain over a wider, fixed
+ * lookback (D21).
  */
 export default async function DashboardPage(): Promise<React.JSX.Element> {
 	const range = defaultRange();
+	const lookback = colorDomainLookback();
 	const db = await getDatabase();
 
-	const [byMachine, byProject, byModel, efficiency] = await Promise.all([
+	const [byMachine, byProject, byModel, efficiency, machineDomain, projectDomain, modelDomain] = await Promise.all([
 		costPerDay(db, CostSplitDimension.Machine, range),
 		costPerDay(db, CostSplitDimension.Project, range),
 		costPerDay(db, CostSplitDimension.Model, range),
 		dailyEfficiency(db, range),
+		dimensionValueDomain(db, CostSplitDimension.Machine, lookback),
+		dimensionValueDomain(db, CostSplitDimension.Project, lookback),
+		dimensionValueDomain(db, CostSplitDimension.Model, lookback),
 	]);
 
 	return (
@@ -92,13 +85,13 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
 							<TabsTrigger value="model">Model</TabsTrigger>
 						</TabsList>
 						<TabsContent value="machine">
-							<CostSplitView rows={byMachine} dimensionLabel="Machine" />
+							<CostSplitView rows={byMachine} dimensionLabel="Machine" domainOrder={machineDomain} />
 						</TabsContent>
 						<TabsContent value="project">
-							<CostSplitView rows={byProject} dimensionLabel="Project" />
+							<CostSplitView rows={byProject} dimensionLabel="Project" domainOrder={projectDomain} />
 						</TabsContent>
 						<TabsContent value="model">
-							<CostSplitView rows={byModel} dimensionLabel="Model" />
+							<CostSplitView rows={byModel} dimensionLabel="Model" domainOrder={modelDomain} />
 						</TabsContent>
 					</Tabs>
 				</CardContent>

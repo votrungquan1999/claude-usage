@@ -84,6 +84,44 @@ export function pivotForChart(rows: DailyCostByDimensionRow[], topValues: string
 	return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
 }
 
+/** The chart palette's 5 usable slots — a 6th visible series always folds into "Other" instead of
+ * generating a 6th hue (D21). */
+const SERIES_COLOR_SLOTS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
+
+/**
+ * Assigns each shown dimension value a stable colour slot (D21) keyed by the value's position in
+ * a RANGE-INDEPENDENT domain ordering, not its rank in the current window — so a value's colour
+ * never changes when the selected window changes. A shown value whose domain position falls
+ * outside the palette (rank >= 5, or the value is absent from the domain entirely) takes the
+ * lowest slot not already claimed by another shown value, in `shownValues` order, so two visible
+ * series can never collide.
+ *
+ * @param shownValues - dimension values with their own series in the current window (already capped to palette size)
+ * @param domainOrder - the dimension's values ordered range-independently (cost desc, 365-day lookback, alphabetical tie-break)
+ */
+export function assignSeriesColorSlots(shownValues: string[], domainOrder: string[]): Record<string, string> {
+	const domainIndex = new Map(domainOrder.map((value, index) => [value, index]));
+	const claimedSlots = new Set<number>();
+	const preAssigned = shownValues.map((value) => {
+		const index = domainIndex.get(value);
+		const slot = index !== undefined && index < SERIES_COLOR_SLOTS.length ? index : undefined;
+		if (slot !== undefined) claimedSlots.add(slot);
+		return { value, slot };
+	});
+
+	const colors: Record<string, string> = {};
+	for (const { value, slot } of preAssigned) {
+		let resolvedSlot = slot;
+		if (resolvedSlot === undefined) {
+			resolvedSlot = 0;
+			while (claimedSlots.has(resolvedSlot)) resolvedSlot++;
+			claimedSlots.add(resolvedSlot);
+		}
+		colors[value] = SERIES_COLOR_SLOTS[resolvedSlot];
+	}
+	return colors;
+}
+
 /**
  * Subagent share of a day's priced cost, as a fraction 0-1. `null` when the share is unknown —
  * either zero priced cost overall (division by zero), or subagent events happened but every one

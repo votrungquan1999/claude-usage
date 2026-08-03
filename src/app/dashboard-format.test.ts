@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 
 import {
+	assignSeriesColorSlots,
 	cacheReadRatio,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
@@ -84,6 +85,35 @@ test("cacheReadRatio divides reads by total cache activity", () => {
 
 test("cacheReadRatio is null on a day with zero cache activity, never a division by zero", () => {
 	expect(cacheReadRatio(efficiencyRow())).toBeNull();
+});
+
+test("assignSeriesColorSlots assigns each shown value the palette slot at its position in the domain order (D21)", () => {
+	const colors = assignSeriesColorSlots(["work-mac", "home-mac"], ["home-mac", "work-mac"]);
+
+	expect(colors).toEqual({ "home-mac": "var(--chart-1)", "work-mac": "var(--chart-2)" });
+});
+
+test("assignSeriesColorSlots gives a value the same colour across two different windows, so widening the window never repaints it (D21)", () => {
+	const domainOrder = ["home-mac", "work-mac", "rare-mac"];
+
+	// Narrower window: only home-mac and work-mac show. Wider window: rare-mac now shows too, and
+	// the in-window rank order differs (work-mac now outranks home-mac).
+	const narrowWindow = assignSeriesColorSlots(["home-mac", "work-mac"], domainOrder);
+	const widerWindow = assignSeriesColorSlots(["work-mac", "home-mac", "rare-mac"], domainOrder);
+
+	expect(widerWindow["home-mac"]).toBe(narrowWindow["home-mac"]);
+	expect(widerWindow["work-mac"]).toBe(narrowWindow["work-mac"]);
+});
+
+test("assignSeriesColorSlots gives a shown value ranked beyond the palette size the lowest unclaimed slot, so two shown series never collide (D21)", () => {
+	// "overflow" ranks 6th in the 365-day domain (index 5) — beyond the 5-slot palette — but is
+	// nonetheless shown in THIS window (e.g. it spiked recently). "a" claims slot 0 first.
+	const domainOrder = ["a", "b", "c", "d", "e", "overflow"];
+
+	const colors = assignSeriesColorSlots(["a", "overflow"], domainOrder);
+
+	expect(colors.a).toBe("var(--chart-1)");
+	expect(colors.overflow).toBe("var(--chart-2)");
 });
 
 test("startOfDayInTimezone rewinds a UTC instant to local midnight in the given timezone (D16/R38)", () => {

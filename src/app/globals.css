@@ -101,11 +101,23 @@
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
+    /* D3 — shadcn's neutral-base chart ramp reads as gray (chroma 0) and fails the
+     * normal-vision distinguishability floor at ΔE 6.7 against a floor of 15 (worst pair
+     * #404040↔#525252). Replaced with the dataviz-reference dark palette's first 5 hues,
+     * verified against this app's real card surface (#171717): passes lightness band,
+     * chroma floor, CVD separation (worst adjacent ΔE 8.4), normal-vision floor (19.3),
+     * and >=3:1 contrast on all 5. */
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+    --chart-5: #d55181;
+    /* D21/D10 — "Other" is deliberately achromatic (it isn't a real series, so it must never
+     * read as a 6th hue) but reserved, not `--muted-foreground` — sharing that token made the
+     * smallest series indistinguishable from axis-tick text. oklch(0.51 0 0) ~= #666666:
+     * >=3:1 contrast on #171717 and OKLab ΔE ~20 from --muted-foreground (oklch(0.708 0 0)),
+     * clearing the same 15-floor used for the categorical slots above. */
+    --chart-other: oklch(0.51 0 0);
     --sidebar: oklch(0.205 0 0);
     --sidebar-foreground: oklch(0.985 0 0);
     --sidebar-primary: oklch(0.488 0.243 264.376);
