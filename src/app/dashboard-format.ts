@@ -6,12 +6,14 @@ import type {
 } from "@/server/usage-queries";
 
 import { DEFAULT_SPLIT_TAB, SplitTab } from "./cost-split-view/cost-split-view.type";
+import { DEFAULT_SESSION_SORT, SessionSort } from "./session-list/session-list.type";
 import {
 	FIRST_PAGE,
 	RANGE_FROM_PARAM,
 	RANGE_PRESET_PARAM,
 	RANGE_TO_PARAM,
 	SESSION_PAGE_PARAM,
+	SESSION_SORT_PARAM,
 	SPLIT_TAB_PARAM,
 } from "./href";
 import {
@@ -345,6 +347,9 @@ export interface DashboardView {
 	preset: RangePreset;
 	range: DateRange;
 	tab: SplitTab;
+	/** How the session list is ordered. Closed allowlist, like the tab: an unrecognised value must
+	 * never reach the aggregation that turns it into a `$sort`. */
+	sessionSort: SessionSort;
 	/** Zero-based session-list page. Anything unusable in the URL reads as the first page — a
 	 * page number is a position, and there is only one sensible position to fall back to. */
 	pageIndex: number;
@@ -374,6 +379,7 @@ export function parseDashboardRange(
 ): DashboardView {
 	const tab = parseSplitTab(params.get(SPLIT_TAB_PARAM));
 	const pageIndex = parsePageIndex(params.get(SESSION_PAGE_PARAM));
+	const sessionSort = parseSessionSort(params.get(SESSION_SORT_PARAM));
 	const earliestDayStart = earliestEvent === null ? null : startOfDayInTimezone(earliestEvent, timeZone);
 
 	// An explicit pair wins over any preset also in the URL (D37) — a stale preset left over from
@@ -384,6 +390,7 @@ export function parseDashboardRange(
 			preset: RangePreset.Custom,
 			range: clampWindow(custom.range, earliestDayStart, now),
 			tab,
+			sessionSort,
 			pageIndex,
 			fellBack: false,
 		};
@@ -405,7 +412,25 @@ export function parseDashboardRange(
 			? earliestDayStart
 			: startOfDayInTimezone(new Date(now.getTime() - (PRESET_DAY_SPANS[preset] - 1) * DAY_MS), timeZone);
 
-	return { preset, range: clampWindow({ from: spanStart, to: now }, earliestDayStart, now), tab, pageIndex, fellBack };
+	return {
+		preset,
+		range: clampWindow({ from: spanStart, to: now }, earliestDayStart, now),
+		tab,
+		sessionSort,
+		pageIndex,
+		fellBack,
+	};
+}
+
+/**
+ * A `?sort=` value, falling back to the default order. Closed allowlist for the same reason the
+ * tab is: the value chooses which field an aggregation sorts by.
+ *
+ * @param raw - the raw parameter value, or `null` when the key is absent
+ */
+function parseSessionSort(raw: string | null): SessionSort {
+	const sorts: string[] = Object.values(SessionSort);
+	return raw !== null && sorts.includes(raw) ? (raw as SessionSort) : DEFAULT_SESSION_SORT;
 }
 
 /**

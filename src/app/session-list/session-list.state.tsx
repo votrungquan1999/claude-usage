@@ -4,10 +4,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 
 import { dashboardHref } from "../href";
+import type { SessionSort } from "./session-list.type";
 
 export interface SessionPageNavigation {
 	/** Moves to a 1-based page. */
 	goToPage: (page: number) => void;
+	/** Re-orders the list. The page number is cleared by `dashboardHref`, since page 7 of one
+	 * ordering is a different set of sessions from page 7 of another. */
+	selectSort: (sort: string) => void;
 	/** A page's real URL, so the pager renders links rather than bare buttons. Built here rather
 	 * than passed in: a function cannot cross the server/client boundary as a prop. */
 	hrefForPage: (page: number) => string;
@@ -31,9 +35,15 @@ export function useSessionPageNavigation(): SessionPageNavigation {
 		});
 	}
 
+	function selectSort(sort: string): void {
+		startTransition(() => {
+			router.replace(dashboardHref(searchParams, { sort: sort as SessionSort }), { scroll: false });
+		});
+	}
+
 	function hrefForPage(page: number): string {
 		return dashboardHref(searchParams, { page });
 	}
 
-	return { goToPage, hrefForPage, isPending };
+	return { goToPage, selectSort, hrefForPage, isPending };
 }

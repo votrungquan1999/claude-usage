@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 
+import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
 	Pagination,
 	PaginationContent,
@@ -95,4 +96,38 @@ export function SessionPager({ currentPage, pageCount }: SessionPagerProps): Rea
 			</PaginationContent>
 		</Pagination>
 	);
+}
+
+export interface SessionSortFieldProps {
+	/** The ordering currently in effect, from the URL. */
+	value: string;
+	/** Sort value to label, so the closed trigger names the current ordering. */
+	items: Record<string, string>;
+	/** The `<SelectItem>` list, composed on the server so the option copy stays there. */
+	children: ReactNode;
+}
+
+/**
+ * Chooses how the session list is ordered. Writes straight to the URL, so an ordering is part of
+ * a shared link rather than a local preference that vanishes on reload.
+ */
+export function SessionSortField({ value, items, children }: SessionSortFieldProps): React.JSX.Element {
+	const { selectSort } = useSessionPageNavigation();
+
+	return (
+		<Select items={items} value={value} onValueChange={(next: unknown) => selectSort(String(next))}>
+			<SelectTrigger size="sm" className="w-48">
+				<SelectValue />
+			</SelectTrigger>
+			<SelectContent>{children}</SelectContent>
+		</Select>
+	);
+}
+
+/**
+ * Puts the sort control on its own row above the table, right-aligned so it reads as a control on
+ * the list rather than as a column heading.
+ */
+export function SessionListToolbar({ children }: { children: ReactNode }): React.JSX.Element {
+	return <div className={cn("items-center justify-end gap-2", "grid grid-flow-col")}>{children}</div>;
 }

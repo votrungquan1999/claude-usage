@@ -254,6 +254,17 @@ function mergeEfficiencyByDayAndModel(rows: DailyEfficiencyByModelRow[]): DailyE
 	return [...merged.values()].sort((a, b) => a.day.localeCompare(b.day) || a.model.localeCompare(b.model));
 }
 
+/** How `listSessions` orders its results. Every order carries the same session-id tie-break, so
+ * paging stays stable whichever one is chosen (D38). */
+export enum SessionSortOrder {
+	/** Most expensive in the window first — the order that agrees with the chart above the list. */
+	Cost = "cost",
+	/** Most recently active first. */
+	Recent = "recent",
+	/** Busiest first, by event count. */
+	Events = "events",
+}
+
 /** One session as it appears in the browsable list. */
 export interface SessionListRow {
 	sessionId: string;
@@ -294,6 +305,7 @@ export async function listSessions(
 	range: DateRange,
 	pageIndex: number,
 	pageSize: number,
+	sort: SessionSortOrder,
 ): Promise<SessionListPage> {
 	const [facet] = await db
 		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
@@ -314,9 +326,7 @@ export async function listSessions(
 			},
 			{
 				$facet: {
-					// D38 — session id breaks the tie. Sorting on cost alone lets a tied session
-					// appear on two pages or on none once $skip enters the picture.
-					page: [{ $sort: { costUsd: -1, _id: 1 } }, { $skip: pageIndex * pageSize }, { $limit: pageSize }],
+					page: [{ $sort: sortStageFor(sort) }, { $skip: pageIndex * pageSize }, { $limit: pageSize }],
 					total: [{ $count: "count" }],
 				},
 			},
@@ -349,6 +359,19 @@ export async function listSessions(
 		})),
 		totalCount: facet?.total[0]?.count ?? 0,
 	};
+}
+
+/**
+ * The `$sort` document for an order. Built from a closed switch rather than by interpolating a
+ * field name, and every arm carries `_id: 1`: D38 — without a tie-break, `$skip` over tied rows
+ * puts a session on two pages or on none.
+ *
+ * @param sort - the requested order
+ */
+function sortStageFor(sort: SessionSortOrder): Record<string, 1 | -1> {
+	if (sort === SessionSortOrder.Recent) return { endedAt: -1, _id: 1 };
+	if (sort === SessionSortOrder.Events) return { eventCount: -1, _id: 1 };
+	return { costUsd: -1, _id: 1 };
 }
 
 /** Shape of one grouped session before the lifetime lookup is folded in. */

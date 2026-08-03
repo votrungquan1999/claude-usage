@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 
 import { SplitTab } from "./cost-split-view/cost-split-view.type";
 import { RangePreset } from "./range-picker/range-picker.type";
+import { SessionSort } from "./session-list/session-list.type";
 
 import { dashboardHref, sessionHref } from "./href";
 
@@ -50,4 +51,10 @@ test("changing the window clears the session-list page, so nobody lands on an em
 test("a session-list page is carried in the link, and page 1 is left out of it", () => {
 	expect(dashboardHref(new URLSearchParams(), { page: 3 })).toBe("/?page=3");
 	expect(dashboardHref(new URLSearchParams("page=3"), { page: 1 })).toBe("/");
+});
+
+test("re-sorting the session list clears the page, since page 7 of one ordering is a different set", () => {
+	const href = dashboardHref(new URLSearchParams("page=7"), { sort: SessionSort.Recent });
+
+	expect(href).toBe("/?sort=recent");
 });

@@ -503,3 +503,10 @@ test("a session-list page is read from the URL, and anything that is not a page 
 		expect(parseDashboardRange(new URLSearchParams(`page=${bad}`), NOW, EARLIEST, TZ).pageIndex).toBe(0);
 	}
 });
+
+test("the session sort is read from the URL, and an unoffered ordering falls back to cost", () => {
+	expect(parseDashboardRange(new URLSearchParams("sort=recent"), NOW, EARLIEST, TZ).sessionSort).toBe("recent");
+	// The value chooses which field an aggregation sorts by, so it is an allowlist, not a hint.
+	expect(parseDashboardRange(new URLSearchParams("sort=costUsd"), NOW, EARLIEST, TZ).sessionSort).toBe("cost");
+	expect(parseDashboardRange(new URLSearchParams(), NOW, EARLIEST, TZ).sessionSort).toBe("cost");
+});

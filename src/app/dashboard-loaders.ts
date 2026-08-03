@@ -11,6 +11,7 @@ import {
 	type SessionListPage,
 	dimensionValueDomain,
 	earliestEventTimestamp,
+	type SessionSortOrder,
 	listSessions,
 	rollUpEfficiencyByDay,
 } from "@/server/usage-queries";
@@ -100,10 +101,17 @@ export const loadDailyEfficiency = cache(async (fromMs: number, toMs: number): P
  * @param toMs - window end, epoch milliseconds
  * @param pageIndex - zero-based page number
  * @param pageSize - rows per page
+ * @param sort - which ordering to page through
  */
 export const loadSessionPage = cache(
-	async (fromMs: number, toMs: number, pageIndex: number, pageSize: number): Promise<SessionListPage> => {
+	async (
+		fromMs: number,
+		toMs: number,
+		pageIndex: number,
+		pageSize: number,
+		sort: SessionSortOrder,
+	): Promise<SessionListPage> => {
 		const db = await getDatabase();
-		return listSessions(db, { from: new Date(fromMs), to: new Date(toMs) }, pageIndex, pageSize);
+		return listSessions(db, { from: new Date(fromMs), to: new Date(toMs) }, pageIndex, pageSize, sort);
 	},
 );

@@ -151,7 +151,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 					<CardContent>
 						<CardErrorBoundary fallback={<CardErrorNotice>This card could not be loaded</CardErrorNotice>}>
 							<Suspense fallback={<CardPlaceholder />}>
-								<SessionList fromMs={fromMs} toMs={toMs} pageIndex={view.pageIndex} />
+								<SessionList fromMs={fromMs} toMs={toMs} pageIndex={view.pageIndex} sort={view.sessionSort} />
 							</Suspense>
 						</CardErrorBoundary>
 					</CardContent>

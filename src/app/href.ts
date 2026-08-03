@@ -1,4 +1,5 @@
 import { DEFAULT_SPLIT_TAB, SplitTab } from "./cost-split-view/cost-split-view.type";
+import { DEFAULT_SESSION_SORT, SessionSort } from "./session-list/session-list.type";
 import { DEFAULT_RANGE_PRESET, RangePreset } from "./range-picker/range-picker.type";
 
 /**
@@ -8,6 +9,8 @@ import { DEFAULT_RANGE_PRESET, RangePreset } from "./range-picker/range-picker.t
  *
  * - `preset` — one of `RangePreset`; omitted when it equals `DEFAULT_RANGE_PRESET`.
  * - `tab` — one of `SplitTab`; omitted when it equals `DEFAULT_SPLIT_TAB`.
+ * - `sort` — one of `SessionSort`; omitted at the default, and it CLEARS `page` for the same
+ *   reason a window change does.
  * - `page` — 1-based session-list page; omitted on page 1, and CLEARED by any window change,
  *   since page 7 of the old window is meaningless in the new one (D34).
  * - `from` / `to` — `YYYY-MM-DD` local days in `DASHBOARD_TIMEZONE`, for an explicit custom range.
@@ -20,6 +23,9 @@ export const RANGE_PRESET_PARAM = "preset";
 
 /** See `RANGE_PRESET_PARAM` for the full schema. */
 export const SPLIT_TAB_PARAM = "tab";
+
+/** See `RANGE_PRESET_PARAM` for the full schema. */
+export const SESSION_SORT_PARAM = "sort";
 
 /** See `RANGE_PRESET_PARAM` for the full schema. */
 export const SESSION_PAGE_PARAM = "page";
@@ -38,6 +44,8 @@ export interface DashboardHrefChanges {
 	tab?: SplitTab;
 	/** An explicit window, as `YYYY-MM-DD` local days in `DASHBOARD_TIMEZONE`. */
 	customRange?: DashboardCustomRange;
+	/** How the session list is ordered. */
+	sort?: SessionSort;
 	/** 1-based session-list page. */
 	page?: number;
 }
@@ -72,9 +80,13 @@ export function dashboardHref(current: URLSearchParams, changes: DashboardHrefCh
 		next.set(RANGE_TO_PARAM, changes.customRange.toDay);
 		next.delete(RANGE_PRESET_PARAM);
 	}
-	// Any window change invalidates the page number: page 7 of the last 90 days is not page 7 of
-	// today, and landing on an empty page reads as "no sessions" (D34).
-	if (changes.preset !== undefined || changes.customRange !== undefined) next.delete(SESSION_PAGE_PARAM);
+	if (changes.sort !== undefined) setOrClearDefault(next, SESSION_SORT_PARAM, changes.sort, DEFAULT_SESSION_SORT);
+	// A window change OR a re-sort invalidates the page number: page 7 of one ordering is a
+	// different set of sessions from page 7 of another, and landing past the end of a shorter list
+	// reads as "no sessions" (D34).
+	if (changes.preset !== undefined || changes.customRange !== undefined || changes.sort !== undefined) {
+		next.delete(SESSION_PAGE_PARAM);
+	}
 	if (changes.page !== undefined) setOrClearDefault(next, SESSION_PAGE_PARAM, String(changes.page), String(FIRST_PAGE));
 	if (changes.tab !== undefined) setOrClearDefault(next, SPLIT_TAB_PARAM, changes.tab, DEFAULT_SPLIT_TAB);
 

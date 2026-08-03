@@ -12,6 +12,7 @@ import {
 	earliestEventTimestamp,
 	getSessionBreakdown,
 	listSessions,
+	SessionSortOrder,
 	type DateRange,
 } from "./usage-queries";
 
@@ -693,7 +694,7 @@ test("listSessions ranks a window's sessions by what they cost in it, breaking t
 		event({ requestId: "req_sl_b", messageId: "msg_sl_b", sessionId: "sess-a", timestamp: range.from, costUsd: 9 }),
 	]);
 
-	const page = await listSessions(db, range, 0, 25);
+	const page = await listSessions(db, range, 0, 25, SessionSortOrder.Cost);
 
 	expect(page.rows.map((row) => row.sessionId)).toEqual(["sess-a", "sess-b", "sess-c"]);
 	expect(page.totalCount).toBe(3);
@@ -708,7 +709,7 @@ test("a session straddling the window's edge shows its in-window slice AND its f
 		event({ requestId: "req_st_inside", messageId: "msg_st_inside", sessionId: "sess-straddle", timestamp: range.from, costUsd: 3 }),
 	]);
 
-	const page = await listSessions(db, range, 0, 25);
+	const page = await listSessions(db, range, 0, 25, SessionSortOrder.Cost);
 	const row = page.rows.find((candidate) => candidate.sessionId === "sess-straddle");
 
 	expect(row?.costUsd).toBe(3);
@@ -730,8 +731,8 @@ test("listSessions pages through a window without dropping or repeating a sessio
 		),
 	);
 
-	const first = await listSessions(db, range, 0, 2);
-	const second = await listSessions(db, range, 1, 2);
+	const first = await listSessions(db, range, 0, 2, SessionSortOrder.Cost);
+	const second = await listSessions(db, range, 1, 2, SessionSortOrder.Cost);
 
 	expect(first.rows.map((row) => row.sessionId)).toEqual(["sess-pg-5", "sess-pg-4"]);
 	expect(second.rows.map((row) => row.sessionId)).toEqual(["sess-pg-3", "sess-pg-2"]);
@@ -746,7 +747,38 @@ test("listSessions reports normalized model names, not the raw dated ids stored 
 		event({ requestId: "req_mn_b", messageId: "msg_mn_b", sessionId: "sess-models", timestamp: range.from, model: "claude-opus-5[1m]" }),
 	]);
 
-	const page = await listSessions(db, range, 0, 25);
+	const page = await listSessions(db, range, 0, 25, SessionSortOrder.Cost);
 
 	expect(page.rows.find((row) => row.sessionId === "sess-models")?.models).toEqual(["claude-opus-5"]);
+});
+
+test("listSessions can order by most recent activity instead of cost", async () => {
+	const range = dayRange("2026-11-15");
+	await saveUsageEvents(db, [
+		// The cheapest session is the most recent one, so cost order and recency order disagree —
+		// otherwise this test would pass under either.
+		event({ requestId: "req_so_rich", messageId: "msg_so_rich", sessionId: "sess-rich", timestamp: new Date("2026-11-15T02:00:00.000Z"), costUsd: 90 }),
+		event({ requestId: "req_so_late", messageId: "msg_so_late", sessionId: "sess-late", timestamp: new Date("2026-11-15T20:00:00.000Z"), costUsd: 1 }),
+	]);
+
+	const byRecent = await listSessions(db, range, 0, 25, SessionSortOrder.Recent);
+	const byCost = await listSessions(db, range, 0, 25, SessionSortOrder.Cost);
+
+	expect(byRecent.rows.map((row) => row.sessionId)).toEqual(["sess-late", "sess-rich"]);
+	expect(byCost.rows.map((row) => row.sessionId)).toEqual(["sess-rich", "sess-late"]);
+});
+
+test("listSessions can order by how busy a session was, which is not the same as what it cost", async () => {
+	const range = dayRange("2026-11-18");
+	await saveUsageEvents(db, [
+		// One expensive event vs three cheap ones: cost and volume rank these in opposite orders.
+		event({ requestId: "req_sb_big", messageId: "msg_sb_big", sessionId: "sess-costly", timestamp: range.from, costUsd: 50 }),
+		...[1, 2, 3].map((n) =>
+			event({ requestId: `req_sb_${n}`, messageId: `msg_sb_${n}`, sessionId: "sess-busy", timestamp: range.from, costUsd: 1 }),
+		),
+	]);
+
+	const page = await listSessions(db, range, 0, 25, SessionSortOrder.Events);
+
+	expect(page.rows.map((row) => row.sessionId)).toEqual(["sess-busy", "sess-costly"]);
 });
