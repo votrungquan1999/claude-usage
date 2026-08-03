@@ -7,12 +7,12 @@ import {
 	type DailyEfficiencyByModelRow,
 	type DailyEfficiencyRow,
 	costPerDay,
-	dailyEfficiency,
 	dailyEfficiencyByModel,
 	type SessionListPage,
 	dimensionValueDomain,
 	earliestEventTimestamp,
 	listSessions,
+	rollUpEfficiencyByDay,
 } from "@/server/usage-queries";
 
 /**
@@ -67,18 +67,6 @@ export const loadDimensionDomain = cache(
 );
 
 /**
- * Per-day subagent share and cache token totals — read by two separate cards, which is exactly
- * the case this shared cache exists for.
- *
- * @param fromMs - window start, epoch milliseconds
- * @param toMs - window end, epoch milliseconds
- */
-export const loadDailyEfficiency = cache(async (fromMs: number, toMs: number): Promise<DailyEfficiencyRow[]> => {
-	const db = await getDatabase();
-	return dailyEfficiency(db, { from: new Date(fromMs), to: new Date(toMs) });
-});
-
-/**
  * Per-day, per-model efficiency with cache savings priced — read by the savings chart and the
  * model-mix chart, which is exactly the shared-loader case.
  *
@@ -91,6 +79,19 @@ export const loadDailyEfficiencyByModel = cache(
 		return dailyEfficiencyByModel(db, { from: new Date(fromMs), to: new Date(toMs) });
 	},
 );
+
+/**
+ * Per-day subagent share and cache token totals — read by two separate cards, which is exactly
+ * the case this shared cache exists for.
+ *
+ * @param fromMs - window start, epoch milliseconds
+ * @param toMs - window end, epoch milliseconds
+ */
+export const loadDailyEfficiency = cache(async (fromMs: number, toMs: number): Promise<DailyEfficiencyRow[]> => {
+	// Rolled up from the per-model loader rather than queried separately: the two are the same
+	// aggregation over the same window, and four cards read one or the other on every render.
+	return rollUpEfficiencyByDay(await loadDailyEfficiencyByModel(fromMs, toMs));
+});
 
 /**
  * One page of the session list for a window.

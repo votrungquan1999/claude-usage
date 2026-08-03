@@ -77,12 +77,15 @@ export async function dailyEfficiency(db: Db, range: DateRange): Promise<DailyEf
 }
 
 /**
- * Sums per-model rows back to one row per day. The dollar-savings fields are dropped: this shape
+ * Sums per-model rows back to one row per day. Exported so the shared loader can roll up rows it
+ * has ALREADY fetched, rather than issuing the same aggregation a second time.
+ *
+ * The dollar-savings fields are dropped: this shape
  * predates them and its two consumers (the subagent-share chart, the KPI tiles) do not read them.
  *
  * @param rows - per-day, per-model rows
  */
-function rollUpEfficiencyByDay(rows: DailyEfficiencyByModelRow[]): DailyEfficiencyRow[] {
+export function rollUpEfficiencyByDay(rows: DailyEfficiencyByModelRow[]): DailyEfficiencyRow[] {
 	const byDay = new Map<string, DailyEfficiencyRow>();
 
 	for (const row of rows) {

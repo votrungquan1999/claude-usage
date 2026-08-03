@@ -726,8 +726,8 @@ export function formatSavingsStatement(netSavedUsd: number): string {
 /**
  * A zero-valued efficiency row for a day with no recorded work (D24) — the placeholder
  * `fillMissingDays` inserts so an absent day occupies its own position on the axis. Zeroing
- * `totalCostUsd` is what makes `subagentCostShare` and `cacheReadRatio` return `null` for the day,
- * which is what finally makes the lines' `connectNulls={false}` draw a real break across a gap.
+ * `totalCostUsd` is what makes `subagentCostShare` return `null` for the day, which is what makes
+ * the line's `connectNulls={false}` draw a real break across a gap.
  *
  * @param day - `YYYY-MM-DD`
  */
