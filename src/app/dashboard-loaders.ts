@@ -4,9 +4,11 @@ import { getDatabase } from "@/server/database";
 import {
 	type CostSplitDimension,
 	type DailyCostByDimensionRow,
+	type DailyEfficiencyByModelRow,
 	type DailyEfficiencyRow,
 	costPerDay,
 	dailyEfficiency,
+	dailyEfficiencyByModel,
 	dimensionValueDomain,
 	earliestEventTimestamp,
 } from "@/server/usage-queries";
@@ -73,3 +75,17 @@ export const loadDailyEfficiency = cache(async (fromMs: number, toMs: number): P
 	const db = await getDatabase();
 	return dailyEfficiency(db, { from: new Date(fromMs), to: new Date(toMs) });
 });
+
+/**
+ * Per-day, per-model efficiency with cache savings priced — read by the savings chart and the
+ * model-mix chart, which is exactly the shared-loader case.
+ *
+ * @param fromMs - window start, epoch milliseconds
+ * @param toMs - window end, epoch milliseconds
+ */
+export const loadDailyEfficiencyByModel = cache(
+	async (fromMs: number, toMs: number): Promise<DailyEfficiencyByModelRow[]> => {
+		const db = await getDatabase();
+		return dailyEfficiencyByModel(db, { from: new Date(fromMs), to: new Date(toMs) });
+	},
+);

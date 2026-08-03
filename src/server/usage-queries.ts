@@ -1,6 +1,7 @@
 import type { Db } from "mongodb";
 
 import { normalizeModel } from "@/parser/models.mjs";
+import { cacheSavings, isPricedModel } from "@/parser/pricing.mjs";
 
 import { USAGE_EVENTS_COLLECTION, type UsageEventDocument } from "./usage-store";
 
@@ -72,13 +73,87 @@ export interface DailyEfficiencyRow {
  * @param range - required bound so the query hits `by_time`
  */
 export async function dailyEfficiency(db: Db, range: DateRange): Promise<DailyEfficiencyRow[]> {
+	return rollUpEfficiencyByDay(await dailyEfficiencyByModel(db, range));
+}
+
+/**
+ * Sums per-model rows back to one row per day. The dollar-savings fields are dropped: this shape
+ * predates them and its two consumers (the subagent-share chart, the KPI tiles) do not read them.
+ *
+ * @param rows - per-day, per-model rows
+ */
+function rollUpEfficiencyByDay(rows: DailyEfficiencyByModelRow[]): DailyEfficiencyRow[] {
+	const byDay = new Map<string, DailyEfficiencyRow>();
+
+	for (const row of rows) {
+		const existing = byDay.get(row.day);
+		if (existing) {
+			existing.totalCostUsd += row.totalCostUsd;
+			existing.subagentCostUsd += row.subagentCostUsd;
+			existing.totalEventCount += row.totalEventCount;
+			existing.subagentEventCount += row.subagentEventCount;
+			existing.unpricedEventCount += row.unpricedEventCount;
+			existing.inputTokens += row.inputTokens;
+			existing.cacheReadTokens += row.cacheReadTokens;
+			existing.cacheWrite5mTokens += row.cacheWrite5mTokens;
+			existing.cacheWrite1hTokens += row.cacheWrite1hTokens;
+		} else {
+			byDay.set(row.day, {
+				day: row.day,
+				totalCostUsd: row.totalCostUsd,
+				subagentCostUsd: row.subagentCostUsd,
+				totalEventCount: row.totalEventCount,
+				subagentEventCount: row.subagentEventCount,
+				unpricedEventCount: row.unpricedEventCount,
+				inputTokens: row.inputTokens,
+				cacheReadTokens: row.cacheReadTokens,
+				cacheWrite5mTokens: row.cacheWrite5mTokens,
+				cacheWrite1hTokens: row.cacheWrite1hTokens,
+			});
+		}
+	}
+
+	return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+/** One day's efficiency for ONE model, with what caching saved on it in dollars (D12). */
+export interface DailyEfficiencyByModelRow extends DailyEfficiencyRow {
+	/** Normalized — raw variants of the same model are merged, as `costPerDay` already does. */
+	model: string;
+	/** Saving from cache reads alone, before what populating the cache cost. */
+	grossSavedUsd: number;
+	/** What the cache writes cost ABOVE the base input price — the part attributable to caching. */
+	writePremiumUsd: number;
+	/** `grossSavedUsd - writePremiumUsd`. Can be NEGATIVE (D35): a large one-hour write that is
+	 * barely read back costs more than it saves. Never clamp it. */
+	netSavedUsd: number;
+	/** False when this model has no known price. Its dollar figures are then all zero, which is
+	 * otherwise indistinguishable from a genuinely idle cache. */
+	savingsKnown: boolean;
+}
+
+/**
+ * Per-day, per-model efficiency, with cache savings priced (D12/D6a).
+ *
+ * @param db - the connected database
+ * @param range - required bound so the query hits `by_time`
+ */
+export async function dailyEfficiencyByModel(db: Db, range: DateRange): Promise<DailyEfficiencyByModelRow[]> {
 	const rows = await db
 		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
-		.aggregate<RawEfficiencyRow>([
+		.aggregate<RawEfficiencyByModelRow>([
 			{ $match: { timestamp: { $gte: range.from, $lte: range.to } } },
 			{
 				$group: {
-					_id: { day: { $dateToString: { date: "$timestamp", format: "%Y-%m-%d", timezone: DASHBOARD_TIMEZONE } } },
+					_id: {
+						day: { $dateToString: { date: "$timestamp", format: "%Y-%m-%d", timezone: DASHBOARD_TIMEZONE } },
+						model: "$model",
+						// D6a — prices are effective-dated as UTC instants while a dashboard day is
+						// UTC+7, so a local day can straddle a price change. Splitting the key by UTC
+						// day is what lets each side be priced at the rate it was actually billed at;
+						// the sub-rows are summed back together straight after.
+						utcDay: { $dateToString: { date: "$timestamp", format: "%Y-%m-%d" } },
+					},
 					totalCostUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
 					subagentCostUsd: { $sum: { $cond: [{ $and: ["$isSubagent", "$priced"] }, "$costUsd", 0] } },
 					totalEventCount: { $sum: 1 },
@@ -90,27 +165,46 @@ export async function dailyEfficiency(db: Db, range: DateRange): Promise<DailyEf
 					cacheWrite1hTokens: { $sum: "$cacheWrite1hTokens" },
 				},
 			},
-			{ $sort: { "_id.day": 1 } },
+			{ $sort: { "_id.day": 1, "_id.model": 1 } },
 		])
 		.toArray();
 
-	return rows.map((row) => ({
-		day: row._id.day,
-		totalCostUsd: row.totalCostUsd,
-		subagentCostUsd: row.subagentCostUsd,
-		totalEventCount: row.totalEventCount,
-		subagentEventCount: row.subagentEventCount,
-		unpricedEventCount: row.unpricedEventCount,
-		inputTokens: row.inputTokens,
-		cacheReadTokens: row.cacheReadTokens,
-		cacheWrite5mTokens: row.cacheWrite5mTokens,
-		cacheWrite1hTokens: row.cacheWrite1hTokens,
-	}));
+	// Priced BEFORE the merge, each sub-row at its own UTC day's rate. Summing across UTC days
+	// first and pricing the total afterwards is exactly the bug D6a exists to fix.
+	const priced = rows.map((row) => {
+		const savings = cacheSavings(row._id.model, row._id.utcDay, {
+			cacheReadTokens: row.cacheReadTokens,
+			cacheWrite5mTokens: row.cacheWrite5mTokens,
+			cacheWrite1hTokens: row.cacheWrite1hTokens,
+		});
+
+		return {
+			day: row._id.day,
+			// Normalized here so a `[1m]` or dated variant of one model reads as one series, the
+			// same merge `costPerDay` already does.
+			model: normalizeModel(row._id.model),
+			totalCostUsd: row.totalCostUsd,
+			subagentCostUsd: row.subagentCostUsd,
+			totalEventCount: row.totalEventCount,
+			subagentEventCount: row.subagentEventCount,
+			unpricedEventCount: row.unpricedEventCount,
+			inputTokens: row.inputTokens,
+			cacheReadTokens: row.cacheReadTokens,
+			cacheWrite5mTokens: row.cacheWrite5mTokens,
+			cacheWrite1hTokens: row.cacheWrite1hTokens,
+			grossSavedUsd: savings.grossUsd,
+			writePremiumUsd: savings.writePremiumUsd,
+			netSavedUsd: savings.netUsd,
+			savingsKnown: isPricedModel(row._id.model),
+		};
+	});
+
+	return mergeEfficiencyByDayAndModel(priced);
 }
 
-/** Shape of one row Mongo's `$group` returns for `dailyEfficiency`. */
-interface RawEfficiencyRow {
-	_id: { day: string };
+/** Shape of one row Mongo's `$group` returns for `dailyEfficiencyByModel`. */
+interface RawEfficiencyByModelRow {
+	_id: { day: string; model: string; utcDay: string };
 	totalCostUsd: number;
 	subagentCostUsd: number;
 	totalEventCount: number;
@@ -120,6 +214,41 @@ interface RawEfficiencyRow {
 	cacheReadTokens: number;
 	cacheWrite5mTokens: number;
 	cacheWrite1hTokens: number;
+}
+
+/**
+ * Sums the UTC-day sub-rows of one local day back together, per normalized model — the dollar
+ * fields included, since each sub-row was already priced at its own rate.
+ *
+ * @param rows - already-priced sub-rows, one per (local day, raw model, UTC day)
+ */
+function mergeEfficiencyByDayAndModel(rows: DailyEfficiencyByModelRow[]): DailyEfficiencyByModelRow[] {
+	const merged = new Map<string, DailyEfficiencyByModelRow>();
+
+	for (const row of rows) {
+		const key = `${row.day} ${row.model}`;
+		const existing = merged.get(key);
+
+		if (existing) {
+			existing.totalCostUsd += row.totalCostUsd;
+			existing.subagentCostUsd += row.subagentCostUsd;
+			existing.totalEventCount += row.totalEventCount;
+			existing.subagentEventCount += row.subagentEventCount;
+			existing.unpricedEventCount += row.unpricedEventCount;
+			existing.inputTokens += row.inputTokens;
+			existing.cacheReadTokens += row.cacheReadTokens;
+			existing.cacheWrite5mTokens += row.cacheWrite5mTokens;
+			existing.cacheWrite1hTokens += row.cacheWrite1hTokens;
+			existing.grossSavedUsd += row.grossSavedUsd;
+			existing.writePremiumUsd += row.writePremiumUsd;
+			existing.netSavedUsd += row.netSavedUsd;
+			existing.savingsKnown = existing.savingsKnown && row.savingsKnown;
+		} else {
+			merged.set(key, { ...row });
+		}
+	}
+
+	return [...merged.values()].sort((a, b) => a.day.localeCompare(b.day) || a.model.localeCompare(b.model));
 }
 
 /** One model's contribution to a session's total, sorted by cost descending. */

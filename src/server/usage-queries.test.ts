@@ -7,6 +7,7 @@ import {
 	CostSplitDimension,
 	costPerDay,
 	dailyEfficiency,
+	dailyEfficiencyByModel,
 	dimensionValueDomain,
 	earliestEventTimestamp,
 	getSessionBreakdown,
@@ -570,4 +571,110 @@ test("on the repo split, checkouts sharing a repoKey merge under the shortest pr
 
 	expect(rows).toContainEqual(expect.objectContaining({ dimensionValue: "personal/ccp", costUsd: 3, eventCount: 2 }));
 	expect(rows.some((row) => row.dimensionValue === "personal/ccp-TICKET-42")).toBe(false);
+});
+
+test("dailyEfficiencyByModel splits a day's cache savings by model, so the mix and the savings agree", async () => {
+	const range = dayRange("2026-10-05");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_bm_opus",
+			messageId: "msg_bm_opus",
+			timestamp: range.from,
+			model: "claude-opus-5",
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 0,
+			cacheWrite1hTokens: 0,
+		}),
+		event({
+			requestId: "req_bm_haiku",
+			messageId: "msg_bm_haiku",
+			timestamp: range.from,
+			model: "claude-haiku-4-5",
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 0,
+			cacheWrite1hTokens: 0,
+		}),
+	]);
+
+	const rows = await dailyEfficiencyByModel(db, range);
+
+	// $5/MTok and $1/MTok base prices; a read saves 0.9x of that.
+	expect(rows.find((row) => row.model === "claude-opus-5")?.netSavedUsd).toBeCloseTo(4.5, 6);
+	expect(rows.find((row) => row.model === "claude-haiku-4-5")?.netSavedUsd).toBeCloseTo(0.9, 6);
+});
+
+test("a local day straddling a price change prices each side at the rate it was actually billed at (D6a)", async () => {
+	// claude-sonnet-5 moves from $2/MTok to $3/MTok at 2026-09-01T00:00Z. The local day
+	// 2026-09-01 in Asia/Ho_Chi_Minh runs 2026-08-31T17:00Z -> 2026-09-01T16:59Z, so it spans that
+	// boundary. Both events below land on the SAME local day and on DIFFERENT sides of the change.
+	const range = { from: new Date("2026-08-31T17:00:00.000Z"), to: new Date("2026-09-01T16:59:59.999Z") };
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_boundary_old",
+			messageId: "msg_boundary_old",
+			timestamp: new Date("2026-08-31T18:00:00.000Z"),
+			model: "claude-sonnet-5",
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 0,
+			cacheWrite1hTokens: 0,
+		}),
+		event({
+			requestId: "req_boundary_new",
+			messageId: "msg_boundary_new",
+			timestamp: new Date("2026-09-01T10:00:00.000Z"),
+			model: "claude-sonnet-5",
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 0,
+			cacheWrite1hTokens: 0,
+		}),
+		// A second model on the same day, so the merge cannot pass by collapsing everything.
+		event({
+			requestId: "req_boundary_other",
+			messageId: "msg_boundary_other",
+			timestamp: new Date("2026-09-01T10:00:00.000Z"),
+			model: "claude-haiku-4-5",
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 0,
+			cacheWrite1hTokens: 0,
+		}),
+	]);
+
+	const rows = await dailyEfficiencyByModel(db, range);
+	const sonnet = rows.filter((row) => row.day === "2026-09-01" && row.model === "claude-sonnet-5");
+
+	// One merged row: $1.80 at the old rate plus $2.70 at the new one. Pricing the whole local day
+	// at either single rate gives $3.60 or $5.40 — both wrong, and both silently so.
+	expect(sonnet).toHaveLength(1);
+	expect(sonnet[0].grossSavedUsd).toBeCloseTo(4.5, 6);
+	expect(sonnet[0].totalEventCount).toBe(2);
+});
+
+test("raw model variants that normalize to the same model merge into one row, so a 1m-context variant is not a second series", async () => {
+	const range = dayRange("2026-10-08");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_nm_plain",
+			messageId: "msg_nm_plain",
+			timestamp: range.from,
+			model: "claude-opus-5",
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 0,
+			cacheWrite1hTokens: 0,
+		}),
+		event({
+			requestId: "req_nm_1m",
+			messageId: "msg_nm_1m",
+			timestamp: range.from,
+			model: "claude-opus-5[1m]",
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 0,
+			cacheWrite1hTokens: 0,
+		}),
+	]);
+
+	const rows = await dailyEfficiencyByModel(db, range);
+
+	expect(rows).toHaveLength(1);
+	expect(rows[0].model).toBe("claude-opus-5");
+	expect(rows[0].grossSavedUsd).toBeCloseTo(9, 6);
 });

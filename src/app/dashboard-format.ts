@@ -1,4 +1,9 @@
-import type { DailyCostByDimensionRow, DailyEfficiencyRow, DateRange } from "@/server/usage-queries";
+import type {
+	DailyCostByDimensionRow,
+	DailyEfficiencyByModelRow,
+	DailyEfficiencyRow,
+	DateRange,
+} from "@/server/usage-queries";
 
 import { DEFAULT_SPLIT_TAB, SplitTab } from "./cost-split-view/cost-split-view.type";
 import { RANGE_FROM_PARAM, RANGE_PRESET_PARAM, RANGE_TO_PARAM, SPLIT_TAB_PARAM } from "./href";
@@ -283,18 +288,6 @@ export function formatInstantInTimezone(date: Date, timeZone: string): string {
 }
 
 /**
- * Fraction of cache tokens that were reads rather than writes, as a fraction 0-1. `null` on a
- * day with zero cache activity (no reads and no writes).
- *
- * @param row - one day from `dailyEfficiency`
- */
-export function cacheReadRatio(row: DailyEfficiencyRow): number | null {
-	const totalCacheTokens = row.cacheReadTokens + row.cacheWrite5mTokens + row.cacheWrite1hTokens;
-	if (totalCacheTokens === 0) return null;
-	return row.cacheReadTokens / totalCacheTokens;
-}
-
-/**
  * The calendar day an instant falls on, as `YYYY-MM-DD`, read in `timeZone` — the same calendar
  * every chart buckets by. Gap-fill bounds must come from here rather than from the instant's UTC
  * date, or the first and last bar of a range land on the wrong day at UTC+7.
@@ -576,6 +569,64 @@ export function summarizeMonthToDate(rows: DailyEfficiencyRow[], todayKey: strin
 		monthCostUsd: rows.reduce((sum, row) => sum + row.totalCostUsd, 0),
 		monthUnpricedEventCount: rows.reduce((sum, row) => sum + row.unpricedEventCount, 0),
 	};
+}
+
+/** One day's cache savings in dollars (D12). */
+export interface DailySavingsRow {
+	day: string;
+	/** Saving from reads alone, before what populating the cache cost — the tooltip figure. */
+	grossSavedUsd: number;
+	/** What caching actually saved. NEGATIVE on a day whose writes were barely read back (D35). */
+	netSavedUsd: number;
+	/** False when any model on this day has no known price, so its zero is unmeasured rather than
+	 * measured (D17's convention, applied to savings). */
+	savingsKnown: boolean;
+	/** Events recorded — what distinguishes a gap-filled day from a real zero (D24). */
+	totalEventCount: number;
+}
+
+/**
+ * Sums per-model rows into one savings figure per day. Receives dollars that were already priced
+ * server-side; this module compiles into the CLIENT bundle, so it must never do pricing itself —
+ * importing the price table here would ship it to the browser.
+ *
+ * @param rows - per-day, per-model rows carrying already-priced savings
+ */
+export function rollUpDailySavings(rows: DailyEfficiencyByModelRow[]): DailySavingsRow[] {
+	const byDay = new Map<string, DailySavingsRow>();
+
+	for (const row of rows) {
+		const existing = byDay.get(row.day) ?? emptySavingsRow(row.day);
+		existing.grossSavedUsd += row.grossSavedUsd;
+		existing.netSavedUsd += row.netSavedUsd;
+		existing.totalEventCount += row.totalEventCount;
+		// One unpriced model makes the whole day's figure a floor, not a measurement.
+		existing.savingsKnown = existing.savingsKnown && row.savingsKnown;
+		byDay.set(row.day, existing);
+	}
+
+	return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+/**
+ * A zero-valued savings row for a day with no recorded work (D24) — the placeholder
+ * `fillMissingDays` inserts so an absent day keeps its place on the axis.
+ *
+ * @param day - `YYYY-MM-DD`
+ */
+export function emptySavingsRow(day: string): DailySavingsRow {
+	return { day, grossSavedUsd: 0, netSavedUsd: 0, savingsKnown: true, totalEventCount: 0 };
+}
+
+/**
+ * States what caching did over a range, in words (D35). Negative money reads as a COST, not as a
+ * negative saving — and it never renders as `$-1.98`, which puts the sign in the wrong place.
+ *
+ * @param netSavedUsd - net saving across the range; may be negative
+ */
+export function formatSavingsStatement(netSavedUsd: number): string {
+	if (netSavedUsd < 0) return `Caching cost $${Math.abs(netSavedUsd).toFixed(2)} more than it saved`;
+	return `Caching saved $${netSavedUsd.toFixed(2)}`;
 }
 
 /**

@@ -14,7 +14,7 @@ import {
 	DashboardTitle,
 	RangeFallbackNotice,
 } from "./dashboard-shell.ui";
-import { CacheEfficiencyView } from "./efficiency/cache-efficiency-view";
+import { CacheSavingsView } from "./efficiency/cache-savings-view";
 import { SubagentShareView } from "./efficiency/subagent-share-view";
 import { KpiCards } from "./kpi-cards/kpi-cards";
 import { RANGE_PRESET_LABELS, RangePresetOptions } from "./range-picker/range-picker";
@@ -113,12 +113,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
 				<Card>
 					<CardHeader>
-						<CardTitle>Cache reads vs writes</CardTitle>
+						<CardTitle>What caching saved</CardTitle>
 					</CardHeader>
 					<CardContent>
 						<CardErrorBoundary fallback={<CardErrorNotice>This card could not be loaded</CardErrorNotice>}>
 							<Suspense fallback={<CardPlaceholder />}>
-								<CacheEfficiencyView fromMs={fromMs} toMs={toMs} />
+								<CacheSavingsView fromMs={fromMs} toMs={toMs} />
 							</Suspense>
 						</CardErrorBoundary>
 					</CardContent>

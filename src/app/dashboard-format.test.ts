@@ -2,15 +2,16 @@ import { expect, test } from "vitest";
 
 import {
 	assignSeriesColorSlots,
-	cacheReadRatio,
 	colorDomainWindow,
 	dayKeyInTimezone,
 	endOfDayInTimezone,
 	fillMissingDays,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
+	formatSavingsStatement,
 	monthProgressInTimezone,
 	projectMonthEndCost,
+	rollUpDailySavings,
 	parseDashboardRange,
 	pivotForChart,
 	rankDimensionTotals,
@@ -88,14 +89,6 @@ test("subagentCostShare is null on a day with zero priced cost, never a division
 test("subagentCostShare is null (not 0) when a day's only subagent spend is unpriced (R41/D17)", () => {
 	const row = efficiencyRow({ totalCostUsd: 10, subagentCostUsd: 0, subagentEventCount: 1 });
 	expect(subagentCostShare(row)).toBeNull();
-});
-
-test("cacheReadRatio divides reads by total cache activity", () => {
-	expect(cacheReadRatio(efficiencyRow({ cacheReadTokens: 300, cacheWrite5mTokens: 100 }))).toBe(0.75);
-});
-
-test("cacheReadRatio is null on a day with zero cache activity, never a division by zero", () => {
-	expect(cacheReadRatio(efficiencyRow())).toBeNull();
 });
 
 test("assignSeriesColorSlots assigns each shown value the palette slot at its position in the domain order (D21)", () => {
@@ -409,4 +402,44 @@ test("summarizeMonthToDate reads an absent today as zero spend, not as missing d
 test("the repo split is a recognised tab, and still nothing outside the allowlist is (D30)", () => {
 	expect(parseDashboardRange(new URLSearchParams("tab=repo"), NOW, EARLIEST, TZ).tab).toBe("repo");
 	expect(parseDashboardRange(new URLSearchParams("tab=repoKey"), NOW, EARLIEST, TZ).tab).toBe("machine");
+});
+
+function savingsModelRow(overrides: Partial<Parameters<typeof rollUpDailySavings>[0][number]> = {}) {
+	return {
+		...efficiencyRow(),
+		model: "claude-opus-5",
+		grossSavedUsd: 0,
+		writePremiumUsd: 0,
+		netSavedUsd: 0,
+		savingsKnown: true,
+		...overrides,
+	};
+}
+
+test("rollUpDailySavings sums every model's savings into one figure per day", () => {
+	const rows = rollUpDailySavings([
+		savingsModelRow({ day: "2026-08-01", model: "claude-opus-5", grossSavedUsd: 4.5, netSavedUsd: 3, totalEventCount: 2 }),
+		savingsModelRow({ day: "2026-08-01", model: "claude-haiku-4-5", grossSavedUsd: 0.9, netSavedUsd: 0.5, totalEventCount: 1 }),
+	]);
+
+	expect(rows).toEqual([
+		{ day: "2026-08-01", grossSavedUsd: 5.4, netSavedUsd: 3.5, savingsKnown: true, totalEventCount: 3 },
+	]);
+});
+
+test("rollUpDailySavings marks a whole day as unmeasured when any model on it has no known price", () => {
+	const rows = rollUpDailySavings([
+		savingsModelRow({ day: "2026-08-01", model: "claude-opus-5", netSavedUsd: 3, savingsKnown: true }),
+		savingsModelRow({ day: "2026-08-01", model: "claude-unreleased", netSavedUsd: 0, savingsKnown: false }),
+	]);
+
+	// $0 from an unpriced model is indistinguishable from an idle cache — the day's figure is a
+	// floor, and the chart has to be able to say so.
+	expect(rows[0].savingsKnown).toBe(false);
+});
+
+test("formatSavingsStatement reads a negative net as a cost, never as a negative saving (D35)", () => {
+	expect(formatSavingsStatement(28.5)).toBe("Caching saved $28.50");
+	// Not "saved $-1.98", which also puts the sign in the wrong place.
+	expect(formatSavingsStatement(-1.98)).toBe("Caching cost $1.98 more than it saved");
 });

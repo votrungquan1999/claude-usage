@@ -82,3 +82,34 @@ export function turnCost(turn) {
 
 	return perMillion / 1_000_000;
 }
+
+/**
+ * What caching saved, in USD, on one model's tokens at one point in time.
+ *
+ * `grossUsd` is the saving from reads alone: a cache read bills at `CACHE_READ` times the base
+ * input price, so it saves the rest. `writePremiumUsd` is what populating the cache cost EXTRA —
+ * a write bills above the base price, and only that surcharge is attributable to caching.
+ *
+ * Net is the difference and CAN be negative: a large one-hour write that is barely read back
+ * costs more than it saves. Callers must render that as a cost, never clamp it to zero.
+ *
+ * An unknown model returns all zeros, which is indistinguishable from no cache activity — pair
+ * this with `isPricedModel` rather than reading a zero as measured.
+ *
+ * @param {string} model
+ * @param {string} timestamp - ISO-8601 UTC, or a bare `YYYY-MM-DD`; both compare correctly
+ * @param {{cacheReadTokens: number, cacheWrite5mTokens: number, cacheWrite1hTokens: number}} tokens
+ * @returns {{grossUsd: number, writePremiumUsd: number, netUsd: number}}
+ */
+export function cacheSavings(model, timestamp, tokens) {
+	const price = priceAt(model, timestamp);
+	if (!price) return { grossUsd: 0, writePremiumUsd: 0, netUsd: 0 };
+
+	const grossUsd = (tokens.cacheReadTokens * price.input * (1 - CACHE_READ)) / 1_000_000;
+	const writePremiumUsd =
+		(tokens.cacheWrite5mTokens * price.input * (CACHE_WRITE_5M - 1) +
+			tokens.cacheWrite1hTokens * price.input * (CACHE_WRITE_1H - 1)) /
+		1_000_000;
+
+	return { grossUsd, writePremiumUsd, netUsd: grossUsd - writePremiumUsd };
+}
