@@ -4,6 +4,7 @@ import {
 	assignSeriesColorSlots,
 	cacheReadRatio,
 	dayKeyInTimezone,
+	endOfDayInTimezone,
 	fillMissingDays,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
@@ -278,4 +279,57 @@ test("a tab naming a field the app never splits by is rejected, not passed throu
 	// open `?tab=` would let a URL split spend by an internal identity field. Closed allowlist.
 	expect(parseDashboardRange(new URLSearchParams("tab=requestId"), NOW, EARLIEST, TZ).tab).toBe("machine");
 	expect(parseDashboardRange(new URLSearchParams("tab=accountUuid"), NOW, EARLIEST, TZ).tab).toBe("machine");
+});
+
+test("endOfDayInTimezone bounds a day at its last millisecond, so a range ending in the past stops there", () => {
+	// A custom range ending 2026-07-15 must include all of that local day and nothing after it.
+	// Local midnight on the 16th is 17:00Z on the 15th, so the inclusive bound is 1ms earlier.
+	expect(endOfDayInTimezone(new Date("2026-07-15T05:00:00.000Z"), TZ).toISOString()).toBe("2026-07-15T16:59:59.999Z");
+});
+
+test("an explicit from/to pair selects exactly those local days, end included", () => {
+	const view = parseDashboardRange(new URLSearchParams("from=2026-07-01&to=2026-07-15"), NOW, EARLIEST, TZ);
+
+	expect(view.range.from.toISOString()).toBe("2026-06-30T17:00:00.000Z");
+	expect(view.range.to.toISOString()).toBe("2026-07-15T16:59:59.999Z");
+	expect(view.preset).toBe("custom");
+	expect(view.fellBack).toBe(false);
+});
+
+test("a from/to pair that runs backwards falls back to the default window and says so (D37)", () => {
+	const view = parseDashboardRange(new URLSearchParams("from=2026-07-15&to=2026-07-01"), NOW, EARLIEST, TZ);
+
+	expect(view.preset).toBe("30d");
+	expect(view.range.from.toISOString()).toBe("2026-07-04T17:00:00.000Z");
+	expect(view.fellBack).toBe(true);
+});
+
+test("a half-written or unparseable date pair falls back and says so, rather than guessing the other end (D37)", () => {
+	const halfPair = parseDashboardRange(new URLSearchParams("from=2026-07-01"), NOW, EARLIEST, TZ);
+	expect(halfPair.preset).toBe("30d");
+	expect(halfPair.fellBack).toBe(true);
+
+	const notADate = parseDashboardRange(new URLSearchParams("from=july&to=2026-07-15"), NOW, EARLIEST, TZ);
+	expect(notADate.preset).toBe("30d");
+	expect(notADate.fellBack).toBe(true);
+
+	// Well-formed but not a real day. `new Date` rolls this to 2026-03-03 rather than rejecting it.
+	const noSuchDay = parseDashboardRange(new URLSearchParams("from=2026-02-31&to=2026-07-15"), NOW, EARLIEST, TZ);
+	expect(noSuchDay.preset).toBe("30d");
+	expect(noSuchDay.fellBack).toBe(true);
+});
+
+test("a custom range is held inside the recorded corpus at both ends (D36)", () => {
+	// Without the clamp this asks gap fill to synthesize a row per day from 1970 to 2099.
+	const view = parseDashboardRange(new URLSearchParams("from=1970-01-01&to=2099-12-31"), NOW, EARLIEST, TZ);
+
+	expect(view.range.from.toISOString()).toBe("2026-05-29T17:00:00.000Z");
+	expect(view.range.to).toEqual(NOW);
+});
+
+test("preset=custom is rejected as input — it names no window of its own", () => {
+	const view = parseDashboardRange(new URLSearchParams("preset=custom"), NOW, EARLIEST, TZ);
+
+	expect(view.preset).toBe("30d");
+	expect(view.fellBack).toBe(true);
 });

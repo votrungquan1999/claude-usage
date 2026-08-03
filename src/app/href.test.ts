@@ -22,3 +22,21 @@ test("changing the tab leaves the selected window alone, so one control never re
 
 	expect(href).toBe("/?preset=90d&tab=model");
 });
+
+test("picking explicit dates replaces the preset, so only one thing describes the window (D37)", () => {
+	const href = dashboardHref(new URLSearchParams("preset=90d"), {
+		customRange: { fromDay: "2026-07-01", toDay: "2026-07-15" },
+	});
+
+	expect(href).toBe("/?from=2026-07-01&to=2026-07-15");
+});
+
+test("going back to a preset clears the explicit dates, so the preset click actually changes the window", () => {
+	// The parser resolves explicit dates AHEAD of any preset, so leaving from/to behind would make
+	// this click do nothing at all.
+	const href = dashboardHref(new URLSearchParams("from=2026-07-01&to=2026-07-15"), {
+		preset: RangePreset.Last7Days,
+	});
+
+	expect(href).toBe("/?preset=7d");
+});

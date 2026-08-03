@@ -5,14 +5,15 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 import { useRangeNavigation } from "./range-picker/range-picker.state";
-import { RangePresetField } from "./range-picker/range-picker.ui";
-import type { RangePreset } from "./range-picker/range-picker.type";
+import type { DashboardWindowView } from "./range-picker/range-picker.type";
+import { RangePreset } from "./range-picker/range-picker.type";
+import { RangeCalendarField, RangePresetField } from "./range-picker/range-picker.ui";
 
 export interface DashboardShellProps {
 	/** Title and account actions, composed on the server. */
 	header: ReactNode;
-	/** The window currently on screen. */
-	rangeValue: RangePreset;
+	/** The window currently on screen, and the days the calendar may offer. */
+	view: DashboardWindowView;
 	/** Preset value to label, for the picker's closed trigger. */
 	rangeLabels: Record<string, string>;
 	/** The picker's option list, composed on the server. */
@@ -33,22 +34,38 @@ export interface DashboardShellProps {
  */
 export function DashboardShell({
 	header,
-	rangeValue,
+	view,
 	rangeLabels,
 	rangeOptions,
 	notice,
 	children,
 }: DashboardShellProps): React.JSX.Element {
-	const { selectPreset, isPending } = useRangeNavigation();
+	const { selectPreset, selectCustomRange, isPending } = useRangeNavigation();
 
 	return (
 		<main className={cn("gap-6 p-8", "grid")}>
 			<div className={cn("items-center gap-4", "grid grid-cols-[1fr_auto]")}>{header}</div>
 
-			<div className={cn("items-center gap-3", "grid grid-cols-[auto_1fr]")}>
-				<RangePresetField value={rangeValue} items={rangeLabels} onSelect={(next) => selectPreset(next as RangePreset)}>
+			<div className={cn("items-center gap-3", "grid grid-cols-[auto_auto_1fr]")}>
+				<RangePresetField
+					value={view.preset}
+					items={rangeLabels}
+					onSelect={(next) => selectPreset(next as RangePreset)}
+				>
 					{rangeOptions}
 				</RangePresetField>
+				{/* Keyed on the committed window so choosing a preset resets the calendar's draft by
+				    remounting, rather than by mirroring props into state in an effect. */}
+				<RangeCalendarField
+					key={`${view.fromDay}:${view.toDay}`}
+					label={view.label}
+					fromDay={view.fromDay}
+					toDay={view.toDay}
+					earliestDay={view.earliestDay}
+					latestDay={view.latestDay}
+					timeZone={view.timeZone}
+					onSelectRange={selectCustomRange}
+				/>
 				{notice}
 			</div>
 

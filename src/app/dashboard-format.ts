@@ -1,8 +1,13 @@
 import type { DailyCostByDimensionRow, DailyEfficiencyRow, DateRange } from "@/server/usage-queries";
 
 import { DEFAULT_SPLIT_TAB, SplitTab } from "./cost-split-view/cost-split-view.type";
-import { RANGE_PRESET_PARAM, SPLIT_TAB_PARAM } from "./href";
-import { DEFAULT_RANGE_PRESET, PRESET_DAY_SPANS, RangePreset } from "./range-picker/range-picker.type";
+import { RANGE_FROM_PARAM, RANGE_PRESET_PARAM, RANGE_TO_PARAM, SPLIT_TAB_PARAM } from "./href";
+import {
+	DEFAULT_RANGE_PRESET,
+	PRESET_DAY_SPANS,
+	RangePreset,
+	SELECTABLE_RANGE_PRESETS,
+} from "./range-picker/range-picker.type";
 
 /** A dimension value's total across a whole range — feeds the ranked summary table. */
 export interface DimensionTotal {
@@ -247,6 +252,23 @@ export function startOfDayInTimezone(date: Date, timeZone: string): Date {
 }
 
 /**
+ * The UTC instant of the LAST millisecond of the local day containing `date`, in `timeZone` — the
+ * inclusive upper bound a custom range needs. A range ending on a past day must stop at the end of
+ * that day; using "now" instead would silently include everything up to today.
+ *
+ * @param date - any instant within the target local day
+ * @param timeZone - IANA timezone name (this repo always passes `DASHBOARD_TIMEZONE`)
+ */
+export function endOfDayInTimezone(date: Date, timeZone: string): Date {
+	// Reached by landing mid-way into the next local day and taking ITS midnight, rather than by
+	// adding 24h: a local day is 23 or 25 hours long in a zone that observes DST, and fixed
+	// arithmetic would then overshoot or undershoot the boundary by an hour.
+	const dayStart = startOfDayInTimezone(date, timeZone);
+	const nextDayStart = startOfDayInTimezone(new Date(dayStart.getTime() + 36 * 60 * 60 * 1000), timeZone);
+	return new Date(nextDayStart.getTime() - 1);
+}
+
+/**
  * Renders an instant as `YYYY-MM-DD HH:mm:ss` in `timeZone` (R38/D16) — every chart buckets
  * days in `DASHBOARD_TIMEZONE`, so any timestamp shown to the operator must use the same
  * calendar or the same event appears to belong to two different days across views.
@@ -315,28 +337,104 @@ export function parseDashboardRange(
 	timeZone: string,
 ): DashboardView {
 	const tab = parseSplitTab(params.get(SPLIT_TAB_PARAM));
+	const earliestDayStart = earliestEvent === null ? null : startOfDayInTimezone(earliestEvent, timeZone);
+
+	// An explicit pair wins over any preset also in the URL (D37) — a stale preset left over from
+	// an earlier link must not override the dates the operator actually picked.
+	const custom = parseCustomRange(params.get(RANGE_FROM_PARAM), params.get(RANGE_TO_PARAM), timeZone);
+	if (custom.range !== null) {
+		return {
+			preset: RangePreset.Custom,
+			range: clampWindow(custom.range, earliestDayStart, now),
+			tab,
+			fellBack: false,
+		};
+	}
 
 	const rawPreset = params.get(RANGE_PRESET_PARAM);
 	const requested = parseRangePreset(rawPreset);
 	// Present-but-unrecognised, not merely absent — an absent preset is the default, which is
 	// nothing to announce; a supplied one the app can't honour changes the period on screen (D37).
 	const unusablePreset = rawPreset !== null && requested === null;
+	// Reaching this line with a supplied pair means it was unusable — the usable case returned above.
 	// "All time" has no lower bound of its own; on an empty corpus there is nothing to anchor it to.
 	const allTimeWithoutData = requested === RangePreset.AllTime && earliestEvent === null;
-	const fellBack = unusablePreset || allTimeWithoutData;
+	const fellBack = unusablePreset || allTimeWithoutData || custom.supplied;
 	const preset = fellBack ? DEFAULT_RANGE_PRESET : (requested ?? DEFAULT_RANGE_PRESET);
 
-	const earliestDayStart = earliestEvent === null ? null : startOfDayInTimezone(earliestEvent, timeZone);
 	const spanStart =
 		preset === RangePreset.AllTime && earliestDayStart !== null
 			? earliestDayStart
 			: startOfDayInTimezone(new Date(now.getTime() - (PRESET_DAY_SPANS[preset] - 1) * DAY_MS), timeZone);
 
-	// D36 — no window may reach back before the first recorded event. Without this, gap fill (D11)
-	// would synthesize a row per day across whatever span a URL parameter asked for.
-	const from = earliestDayStart !== null && spanStart < earliestDayStart ? earliestDayStart : spanStart;
+	return { preset, range: clampWindow({ from: spanStart, to: now }, earliestDayStart, now), tab, fellBack };
+}
 
-	return { preset, range: { from, to: now }, tab, fellBack };
+/**
+ * Holds a window inside `[earliest recorded event, now]` (D36). Both ends matter: an unclamped
+ * start would have gap fill (D11) synthesize a row per day back to whatever a URL asked for, and
+ * an unclamped end would do the same forward — `?to=2099-01-01` is ~26,000 synthetic days.
+ *
+ * @param window - the requested window
+ * @param earliestDayStart - local midnight of the first recorded event's day, or `null` if none
+ * @param now - the instant the request is being served
+ */
+function clampWindow(window: DateRange, earliestDayStart: Date | null, now: Date): DateRange {
+	const from = earliestDayStart !== null && window.from < earliestDayStart ? earliestDayStart : window.from;
+	const to = window.to > now ? now : window.to;
+	return { from, to };
+}
+
+/**
+ * The `from`/`to` pair, as an inclusive window of whole local days.
+ */
+interface CustomRangeParse {
+	/** True when either bound appeared in the URL. An ABSENT pair is the ordinary preset path; a
+	 * SUPPLIED but unusable one is a lie about the period on screen and must be announced (D37). */
+	supplied: boolean;
+	/** The window, or `null` when the pair was absent, half-written, unparseable, or inverted. */
+	range: DateRange | null;
+}
+
+/**
+ * Reads an explicit `from`/`to` pair. Both bounds are required: the picker only ever writes them
+ * together, so a lone one is a truncated or hand-edited link, and guessing the other end would
+ * silently invent a period the operator never asked for.
+ *
+ * @param rawFrom - the `from` parameter, or `null` when absent
+ * @param rawTo - the `to` parameter, or `null` when absent
+ * @param timeZone - IANA timezone name (this repo always passes `DASHBOARD_TIMEZONE`)
+ */
+function parseCustomRange(rawFrom: string | null, rawTo: string | null, timeZone: string): CustomRangeParse {
+	const supplied = rawFrom !== null || rawTo !== null;
+	if (rawFrom === null || rawTo === null) return { supplied, range: null };
+
+	const fromDay = parseLocalDay(rawFrom, timeZone);
+	const toDay = parseLocalDay(rawTo, timeZone);
+	if (fromDay === null || toDay === null || fromDay > toDay) return { supplied, range: null };
+
+	return { supplied, range: { from: fromDay, to: endOfDayInTimezone(toDay, timeZone) } };
+}
+
+/**
+ * Local midnight of a `YYYY-MM-DD` day, or `null` when the string is not a real calendar day.
+ *
+ * @param raw - the parameter value
+ * @param timeZone - IANA timezone name (this repo always passes `DASHBOARD_TIMEZONE`)
+ */
+function parseLocalDay(raw: string, timeZone: string): Date | null {
+	// Noon UTC to land inside the intended day before reading it in `timeZone`. Exact for every
+	// offset strictly between -12 and +12, which covers `DASHBOARD_TIMEZONE` (UTC+7) with 5 hours
+	// to spare; only the handful of zones at +12:45 and beyond would need a different anchor.
+	const midday = new Date(`${raw}T12:00:00.000Z`);
+	if (Number.isNaN(midday.getTime())) return null;
+	// Round-tripping the parsed day back to a string is the whole validation: it rejects a shape
+	// that is not exactly `YYYY-MM-DD` AND a well-formed day that does not exist (2026-02-31,
+	// which `Date` silently rolls forward to March). A separate format check adds nothing — proven
+	// by removing one and finding no test could tell the difference.
+	if (midday.toISOString().slice(0, 10) !== raw) return null;
+
+	return startOfDayInTimezone(midday, timeZone);
 }
 
 /** One calendar day. Preset spans step back in whole days from `now`; `DASHBOARD_TIMEZONE` has no
@@ -349,7 +447,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * @param raw - the raw parameter value, or `null` when the key is absent
  */
 function parseRangePreset(raw: string | null): RangePreset | null {
-	const presets: string[] = Object.values(RangePreset);
+	const presets: string[] = SELECTABLE_RANGE_PRESETS;
 	return raw !== null && presets.includes(raw) ? (raw as RangePreset) : null;
 }
 

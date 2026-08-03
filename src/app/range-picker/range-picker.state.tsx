@@ -9,6 +9,8 @@ import type { RangePreset } from "./range-picker.type";
 export interface RangeNavigation {
 	/** Selects a window. Safe to call with the value already selected — the URL simply does not change. */
 	selectPreset: (preset: RangePreset) => void;
+	/** Selects an explicit window from two `YYYY-MM-DD` local days. */
+	selectCustomRange: (fromDay: string, toDay: string) => void;
 	/** True while the new window is being fetched, so the caller can hold and dim the current view. */
 	isPending: boolean;
 }
@@ -35,5 +37,11 @@ export function useRangeNavigation(): RangeNavigation {
 		});
 	}
 
-	return { selectPreset, isPending };
+	function selectCustomRange(fromDay: string, toDay: string): void {
+		startTransition(() => {
+			router.replace(dashboardHref(searchParams, { customRange: { fromDay, toDay } }), { scroll: false });
+		});
+	}
+
+	return { selectPreset, selectCustomRange, isPending };
 }

@@ -19,12 +19,26 @@ export const RANGE_PRESET_PARAM = "preset";
 /** See `RANGE_PRESET_PARAM` for the full schema. */
 export const SPLIT_TAB_PARAM = "tab";
 
+/** See `RANGE_PRESET_PARAM` for the full schema. */
+export const RANGE_FROM_PARAM = "from";
+
+/** See `RANGE_PRESET_PARAM` for the full schema. */
+export const RANGE_TO_PARAM = "to";
+
 /** What a dashboard link changes relative to the URL it is built from. Every field is optional —
  * an omitted one keeps whatever the current URL says, so changing the tab never disturbs the
  * window and vice versa. */
 export interface DashboardHrefChanges {
 	preset?: RangePreset;
 	tab?: SplitTab;
+	/** An explicit window, as `YYYY-MM-DD` local days in `DASHBOARD_TIMEZONE`. */
+	customRange?: DashboardCustomRange;
+}
+
+/** The two ends of an explicitly picked window. */
+export interface DashboardCustomRange {
+	fromDay: string;
+	toDay: string;
 }
 
 /**
@@ -38,7 +52,19 @@ export interface DashboardHrefChanges {
 export function dashboardHref(current: URLSearchParams, changes: DashboardHrefChanges): string {
 	const next = new URLSearchParams(current);
 
-	if (changes.preset !== undefined) setOrClearDefault(next, RANGE_PRESET_PARAM, changes.preset, DEFAULT_RANGE_PRESET);
+	// A window comes from a preset OR from explicit dates, never both — writing one clears the
+	// other. Leaving the old key behind would let a stale value keep describing the window, since
+	// the parser resolves explicit dates ahead of any preset (D37).
+	if (changes.preset !== undefined) {
+		setOrClearDefault(next, RANGE_PRESET_PARAM, changes.preset, DEFAULT_RANGE_PRESET);
+		next.delete(RANGE_FROM_PARAM);
+		next.delete(RANGE_TO_PARAM);
+	}
+	if (changes.customRange !== undefined) {
+		next.set(RANGE_FROM_PARAM, changes.customRange.fromDay);
+		next.set(RANGE_TO_PARAM, changes.customRange.toDay);
+		next.delete(RANGE_PRESET_PARAM);
+	}
 	if (changes.tab !== undefined) setOrClearDefault(next, SPLIT_TAB_PARAM, changes.tab, DEFAULT_SPLIT_TAB);
 
 	const query = next.toString();

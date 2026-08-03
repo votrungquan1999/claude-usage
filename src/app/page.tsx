@@ -5,7 +5,7 @@ import { DASHBOARD_TIMEZONE } from "@/server/usage-queries";
 
 import { CardErrorBoundary } from "./card-error-boundary.ui";
 import { CostSplits } from "./cost-split-view/cost-splits";
-import { parseDashboardRange } from "./dashboard-format";
+import { dayKeyInTimezone, parseDashboardRange } from "./dashboard-format";
 import { loadEarliestEventMs } from "./dashboard-loaders";
 import {
 	CardErrorNotice,
@@ -17,7 +17,7 @@ import {
 import { CacheEfficiencyView } from "./efficiency/cache-efficiency-view";
 import { SubagentShareView } from "./efficiency/subagent-share-view";
 import { RANGE_PRESET_LABELS, RangePresetOptions } from "./range-picker/range-picker";
-import { DEFAULT_RANGE_PRESET } from "./range-picker/range-picker.type";
+import { DEFAULT_RANGE_PRESET, type DashboardWindowView } from "./range-picker/range-picker.type";
 import { SessionLookupForm } from "./session-lookup-form";
 import { SignOutButton } from "./sign-out-button";
 
@@ -39,15 +39,29 @@ interface DashboardPageProps {
 export default async function DashboardPage({ searchParams }: DashboardPageProps): Promise<React.JSX.Element> {
 	const params = readSearchParams(await searchParams);
 	const earliestMs = await loadEarliestEventMs();
-	const view = parseDashboardRange(
-		params,
-		new Date(),
-		earliestMs === null ? null : new Date(earliestMs),
-		DASHBOARD_TIMEZONE,
-	);
+	const now = new Date();
+	const view = parseDashboardRange(params, now, earliestMs === null ? null : new Date(earliestMs), DASHBOARD_TIMEZONE);
 
 	const fromMs = view.range.from.getTime();
 	const toMs = view.range.to.getTime();
+
+	// The picker describes the window in the same calendar the charts bucket by, so the dates it
+	// shows and the bars below it always name the same days.
+	const fromDay = dayKeyInTimezone(view.range.from, DASHBOARD_TIMEZONE);
+	const toDay = dayKeyInTimezone(view.range.to, DASHBOARD_TIMEZONE);
+	const windowView: DashboardWindowView = {
+		preset: view.preset,
+		fromDay,
+		toDay,
+		// D36 — the calendar offers only days the corpus could cover. Bounded by TODAY, not by the
+		// window's own end: bounding by the end would leave a past custom range unable to reach
+		// forward again. An empty corpus collapses the span to today, offering nothing rather
+		// than everything.
+		earliestDay: dayKeyInTimezone(earliestMs === null ? now : new Date(earliestMs), DASHBOARD_TIMEZONE),
+		latestDay: dayKeyInTimezone(now, DASHBOARD_TIMEZONE),
+		timeZone: DASHBOARD_TIMEZONE,
+		label: `${fromDay} \u2192 ${toDay}`,
+	};
 	// D41 — the lookback must reach at least as far back as the window itself; a window extending
 	// past it would leave its oldest values unranked and silently repaint the rest.
 	const domainFromMs = Math.min(fromMs, toMs - COLOR_DOMAIN_LOOKBACK_MS);
@@ -62,7 +76,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 						<SignOutButton />
 					</>
 				}
-				rangeValue={view.preset}
+				view={windowView}
 				rangeLabels={RANGE_PRESET_LABELS}
 				rangeOptions={<RangePresetOptions />}
 				notice={
