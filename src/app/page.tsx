@@ -10,10 +10,11 @@ import {
 	type DateRange,
 } from "@/server/usage-queries";
 
-import { CostChart } from "./cost-chart";
+import { CostChart } from "./cost-split-view/cost-chart";
+import { DimensionTotalsTable } from "./cost-split-view/dimension-totals-table";
 import { pivotForChart, rankDimensionTotals, startOfDayInTimezone } from "./dashboard-format";
-import { DimensionTotalsTable } from "./dimension-totals-table";
-import { CacheEfficiencyChart, SubagentShareChart } from "./efficiency-charts";
+import { CacheEfficiencyChart } from "./efficiency/cache-efficiency-chart";
+import { SubagentShareChart } from "./efficiency/subagent-share-chart";
 import { SessionLookupForm } from "./session-lookup-form";
 import { SignOutButton } from "./sign-out-button";
 

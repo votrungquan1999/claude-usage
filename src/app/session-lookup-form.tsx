@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
+import { sessionHref } from "./href";
+
 /**
  * Free-text jump to a session's drill-down page (Step 21). No session list view exists yet, so
  * this is the only way in besides a direct URL.
@@ -20,7 +22,7 @@ export function SessionLookupForm(): React.JSX.Element {
 		event.preventDefault();
 		const trimmed = sessionId.trim();
 		if (!trimmed) return;
-		router.push(`/session/${encodeURIComponent(trimmed)}`);
+		router.push(sessionHref(trimmed));
 	}
 
 	return (

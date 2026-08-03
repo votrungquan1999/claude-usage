@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
-import { formatLowerBoundCost, type DimensionTotal } from "./dashboard-format";
+import { formatLowerBoundCost, type DimensionTotal } from "../dashboard-format";
 
 export interface DimensionTotalsTableProps {
 	totals: DimensionTotal[];
