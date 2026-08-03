@@ -122,6 +122,27 @@ export function assignSeriesColorSlots(shownValues: string[], domainOrder: strin
 	return colors;
 }
 
+/** Range-level summary of which days/events in a chart's data are unpriced (D5) — the single
+ * source both the above-chart sentence and (a future) chart annotation must read from, so they
+ * can never disagree. */
+export interface UnpricedDaysSummary {
+	days: string[];
+	dayCount: number;
+	eventCount: number;
+}
+
+/**
+ * Summarizes which days in a chart's rows carry unpriced events, and how many events total (D5)
+ * — replaces the deleted per-day `*` axis marker with one range-level fact.
+ *
+ * @param rows - a cost-split view's pivoted chart rows
+ */
+export function summarizeUnpricedDays(rows: ChartDayRow[]): UnpricedDaysSummary {
+	const days = rows.filter((row) => row.unpricedEventCount > 0).map((row) => row.day);
+	const eventCount = rows.reduce((sum, row) => sum + row.unpricedEventCount, 0);
+	return { days, dayCount: days.length, eventCount };
+}
+
 /**
  * Subagent share of a day's priced cost, as a fraction 0-1. `null` when the share is unknown —
  * either zero priced cost overall (division by zero), or subagent events happened but every one

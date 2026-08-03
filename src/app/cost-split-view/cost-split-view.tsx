@@ -1,9 +1,22 @@
 import type { DailyCostByDimensionRow } from "@/server/usage-queries";
 
-import { assignSeriesColorSlots, pivotForChart, rankDimensionTotals } from "../dashboard-format";
+import { assignSeriesColorSlots, pivotForChart, rankDimensionTotals, summarizeUnpricedDays } from "../dashboard-format";
 import { CostChart } from "./cost-chart";
+import { UnpricedRangeNotice } from "./cost-split-view.ui";
 import type { SeriesColorMap } from "./cost-split-view.type";
 import { DimensionTotalsTable } from "./dimension-totals-table";
+
+/**
+ * Composes the D5 range-level statement's exact wording from `summarizeUnpricedDays`'s counts —
+ * the single source `UnpricedRangeNotice` and the totals table's per-row lower-bound wording
+ * both trace back to, so they can never disagree. `null` when no day in range is affected.
+ */
+function unpricedRangeMessage(dayCount: number, eventCount: number): string | null {
+	if (dayCount === 0) return null;
+	const dayNoun = dayCount === 1 ? "day" : "days";
+	const eventNoun = eventCount === 1 ? "event" : "events";
+	return `${dayCount} ${dayNoun} in this range include ${eventCount} unpriced ${eventNoun} — totals are a lower bound`;
+}
 
 const TOP_SERIES_COUNT = 5;
 
@@ -35,8 +48,12 @@ export function CostSplitView({ rows, dimensionLabel, domainOrder }: CostSplitVi
 		totals.map((total) => [total.dimensionValue, seriesColors[total.dimensionValue] ?? OTHER_COLOR]),
 	);
 
+	const unpriced = summarizeUnpricedDays(chartData);
+	const unpricedMessage = unpricedRangeMessage(unpriced.dayCount, unpriced.eventCount);
+
 	return (
 		<div className="grid gap-4 pt-4">
+			{unpricedMessage !== null && <UnpricedRangeNotice>{unpricedMessage}</UnpricedRangeNotice>}
 			<CostChart data={chartData} seriesKeys={topValues} colors={seriesColors} />
 			<DimensionTotalsTable totals={totals} dimensionLabel={dimensionLabel} colors={tableColors} />
 		</div>

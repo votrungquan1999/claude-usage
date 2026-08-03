@@ -9,6 +9,7 @@ import {
 	rankDimensionTotals,
 	startOfDayInTimezone,
 	subagentCostShare,
+	summarizeUnpricedDays,
 } from "./dashboard-format";
 
 test("a fully-priced total renders as a plain dollar amount", () => {
@@ -114,6 +115,31 @@ test("assignSeriesColorSlots gives a shown value ranked beyond the palette size 
 
 	expect(colors.a).toBe("var(--chart-1)");
 	expect(colors.overflow).toBe("var(--chart-2)");
+});
+
+test("summarizeUnpricedDays reports nothing when no day has an unpriced event", () => {
+	const summary = summarizeUnpricedDays([
+		{ day: "2026-08-01", unpricedEventCount: 0, "work-mac": 1 },
+		{ day: "2026-08-02", unpricedEventCount: 0, "work-mac": 2 },
+	]);
+
+	expect(summary).toEqual({ days: [], dayCount: 0, eventCount: 0 });
+});
+
+test("summarizeUnpricedDays lists the affected days and sums events across them (D5)", () => {
+	const summary = summarizeUnpricedDays([
+		{ day: "2026-08-01", unpricedEventCount: 3, "work-mac": 1 },
+		{ day: "2026-08-02", unpricedEventCount: 0, "work-mac": 2 },
+		{ day: "2026-08-03", unpricedEventCount: 2, "work-mac": 1 },
+	]);
+
+	expect(summary).toEqual({ days: ["2026-08-01", "2026-08-03"], dayCount: 2, eventCount: 5 });
+});
+
+test("summarizeUnpricedDays includes a fully-unpriced day (zero priced cost, zero-height bar) — it must not be invisible twice over", () => {
+	const summary = summarizeUnpricedDays([{ day: "2026-07-01", unpricedEventCount: 4 }]);
+
+	expect(summary.days).toEqual(["2026-07-01"]);
 });
 
 test("startOfDayInTimezone rewinds a UTC instant to local midnight in the given timezone (D16/R38)", () => {

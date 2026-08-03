@@ -1,6 +1,6 @@
 "use client";
 
-import { Bar, BarChart, CartesianGrid, XAxis, type XAxisTickContentProps } from "recharts";
+import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 
 import {
 	type ChartConfig,
@@ -24,33 +24,13 @@ export interface CostChartProps {
 	colors: SeriesColorMap;
 }
 
-/** One tick label per day; days carrying unpriced spend (D17) get a trailing `*` and a distinct
- * color so a lower-bound bar reads as one even when its visible height is zero. */
-function DayTick(unpricedDays: Set<string>) {
-	return function renderDayTick(props: XAxisTickContentProps): React.JSX.Element {
-		const { x, y, payload } = props;
-		const isUnpriced = unpricedDays.has(String(payload.value));
-		return (
-			<text
-				x={x}
-				y={Number(y) + 12}
-				textAnchor="middle"
-				className={isUnpriced ? "fill-destructive text-xs font-medium" : "fill-muted-foreground text-xs"}
-			>
-				{payload.value}
-				{isUnpriced ? " *" : ""}
-			</text>
-		);
-	};
-}
-
 /**
  * Stacked bar chart of cost per day, one segment per dimension value (Steps 19/22). A
  * `dimensionValue` (e.g. a project slug containing "/") can't be used directly as a CSS
  * custom-property name, so each series gets a synthetic `s{n}` id for the dataKey/color var —
- * the raw value is only ever shown as the legend/tooltip label, never in the identifier. Days
- * carrying unpriced spend (D17) get a marked x-axis tick and, if any exist, a caption — a
- * zero-height bar must never look identical to a day with no work at all.
+ * the raw value is only ever shown as the legend/tooltip label, never in the identifier. Whether
+ * the range includes unpriced events (D17) is stated once, above this chart, by
+ * `cost-split-view.tsx`/`cost-split-view.ui.tsx` (D5) — this component carries no per-day marker.
  */
 export function CostChart({ data, seriesKeys, colors }: CostChartProps): React.JSX.Element {
 	const hasOther = data.some((row) => "Other" in row);
@@ -72,7 +52,6 @@ export function CostChart({ data, seriesKeys, colors }: CostChartProps): React.J
 	});
 
 	const barIds = hasOther ? [...ids, "other"] : ids;
-	const unpricedDays = new Set(data.filter((row) => row.unpricedEventCount > 0).map((row) => row.day));
 
 	if (data.length === 0) {
 		return (
@@ -81,21 +60,16 @@ export function CostChart({ data, seriesKeys, colors }: CostChartProps): React.J
 	}
 
 	return (
-		<div className="grid gap-1">
-			<ChartContainer config={config} className="aspect-auto h-64 w-full">
-				<BarChart data={chartData}>
-					<CartesianGrid vertical={false} />
-					<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={DayTick(unpricedDays)} />
-					<ChartTooltip content={<ChartTooltipContent />} />
-					<ChartLegend content={<ChartLegendContent />} />
-					{barIds.map((id) => (
-						<Bar key={id} dataKey={id} stackId="cost" fill={`var(--color-${id})`} />
-					))}
-				</BarChart>
-			</ChartContainer>
-			{unpricedDays.size > 0 && (
-				<p className="text-xs text-muted-foreground">* day includes unpriced events — bar height is a lower bound</p>
-			)}
-		</div>
+		<ChartContainer config={config} className="aspect-auto h-64 w-full">
+			<BarChart data={chartData}>
+				<CartesianGrid vertical={false} />
+				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} />
+				<ChartTooltip content={<ChartTooltipContent />} />
+				<ChartLegend content={<ChartLegendContent />} />
+				{barIds.map((id) => (
+					<Bar key={id} dataKey={id} stackId="cost" fill={`var(--color-${id})`} />
+				))}
+			</BarChart>
+		</ChartContainer>
 	);
 }
