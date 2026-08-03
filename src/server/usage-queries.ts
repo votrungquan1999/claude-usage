@@ -50,6 +50,10 @@ export interface DailyEfficiencyRow {
 	/** All events, priced and unpriced — the volume denominator for a count-based share. */
 	totalEventCount: number;
 	subagentEventCount: number;
+	/** Count of `priced: false` events on this day (D17) — the KPI tiles' only signal that a
+	 * month's total is a lower bound. Every other per-day row type in this file already carries
+	 * one; this query predates the first consumer that needed it. */
+	unpricedEventCount: number;
 	inputTokens: number;
 	cacheReadTokens: number;
 	cacheWrite5mTokens: number;
@@ -76,6 +80,7 @@ export async function dailyEfficiency(db: Db, range: DateRange): Promise<DailyEf
 					subagentCostUsd: { $sum: { $cond: [{ $and: ["$isSubagent", "$priced"] }, "$costUsd", 0] } },
 					totalEventCount: { $sum: 1 },
 					subagentEventCount: { $sum: { $cond: ["$isSubagent", 1, 0] } },
+					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
 					inputTokens: { $sum: "$inputTokens" },
 					cacheReadTokens: { $sum: "$cacheReadTokens" },
 					cacheWrite5mTokens: { $sum: "$cacheWrite5mTokens" },
@@ -92,6 +97,7 @@ export async function dailyEfficiency(db: Db, range: DateRange): Promise<DailyEf
 		subagentCostUsd: row.subagentCostUsd,
 		totalEventCount: row.totalEventCount,
 		subagentEventCount: row.subagentEventCount,
+		unpricedEventCount: row.unpricedEventCount,
 		inputTokens: row.inputTokens,
 		cacheReadTokens: row.cacheReadTokens,
 		cacheWrite5mTokens: row.cacheWrite5mTokens,
@@ -106,6 +112,7 @@ interface RawEfficiencyRow {
 	subagentCostUsd: number;
 	totalEventCount: number;
 	subagentEventCount: number;
+	unpricedEventCount: number;
 	inputTokens: number;
 	cacheReadTokens: number;
 	cacheWrite5mTokens: number;

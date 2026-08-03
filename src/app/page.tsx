@@ -16,6 +16,7 @@ import {
 } from "./dashboard-shell.ui";
 import { CacheEfficiencyView } from "./efficiency/cache-efficiency-view";
 import { SubagentShareView } from "./efficiency/subagent-share-view";
+import { KpiCards } from "./kpi-cards/kpi-cards";
 import { RANGE_PRESET_LABELS, RangePresetOptions } from "./range-picker/range-picker";
 import { DEFAULT_RANGE_PRESET, type DashboardWindowView } from "./range-picker/range-picker.type";
 import { SessionLookupForm } from "./session-lookup-form";
@@ -70,6 +71,13 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 						<DashboardTitle>Claude Usage</DashboardTitle>
 						<SignOutButton />
 					</>
+				}
+				kpis={
+					<CardErrorBoundary fallback={<CardErrorNotice>Headline figures could not be loaded</CardErrorNotice>}>
+						<Suspense fallback={<CardPlaceholder />}>
+							<KpiCards nowMs={now.getTime()} timeZone={DASHBOARD_TIMEZONE} />
+						</Suspense>
+					</CardErrorBoundary>
 				}
 				view={windowView}
 				rangeLabels={RANGE_PRESET_LABELS}

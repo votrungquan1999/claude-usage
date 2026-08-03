@@ -12,6 +12,9 @@ import { RangeCalendarField, RangePresetField } from "./range-picker/range-picke
 export interface DashboardShellProps {
 	/** Title and account actions, composed on the server. */
 	header: ReactNode;
+	/** Headline figures over FIXED periods, rendered above the filter row because the filter does
+	 * not scope them (D22). */
+	kpis: ReactNode;
 	/** The window currently on screen, and the days the calendar may offer. */
 	view: DashboardWindowView;
 	/** Preset value to label, for the picker's closed trigger. */
@@ -34,6 +37,7 @@ export interface DashboardShellProps {
  */
 export function DashboardShell({
 	header,
+	kpis,
 	view,
 	rangeLabels,
 	rangeOptions,
@@ -45,6 +49,8 @@ export function DashboardShell({
 	return (
 		<main className={cn("gap-6 p-8", "grid")}>
 			<div className={cn("items-center gap-4", "grid grid-cols-[1fr_auto]")}>{header}</div>
+
+			{kpis}
 
 			<div className={cn("items-center gap-3", "grid grid-cols-[auto_auto_1fr]")}>
 				<RangePresetField

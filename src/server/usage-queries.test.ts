@@ -490,3 +490,16 @@ test("earliestEventTimestamp reports the oldest recorded event, giving the wides
 test("earliestEventTimestamp is null on an empty corpus, so all-time has something to fall back from (D36)", async () => {
 	expect(await earliestEventTimestamp(client.db("claude-usage-empty"))).toBeNull();
 });
+
+test("dailyEfficiency reports a day's unpriced events, so a month total can be shown as a lower bound (D17)", async () => {
+	const range = dayRange("2026-09-14");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_eff_priced", timestamp: new Date("2026-09-14T10:00:00.000Z") }),
+		event({ requestId: "req_eff_unpriced", timestamp: new Date("2026-09-14T11:00:00.000Z"), priced: false, costUsd: 0 }),
+	]);
+
+	const [day] = await dailyEfficiency(db, range);
+
+	expect(day.unpricedEventCount).toBe(1);
+	expect(day.totalEventCount).toBe(2);
+});

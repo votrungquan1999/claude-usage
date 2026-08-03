@@ -493,6 +493,92 @@ function parseSplitTab(raw: string | null): SplitTab {
 }
 
 /**
+ * The UTC instant of local midnight on the 1st of the month containing `date`, in `timeZone` —
+ * where "month to date" starts.
+ *
+ * @param date - any instant within the target local month
+ * @param timeZone - IANA timezone name (this repo always passes `DASHBOARD_TIMEZONE`)
+ */
+export function startOfMonthInTimezone(date: Date, timeZone: string): Date {
+	const parts = timezonePartsAsUtcMs(date, timeZone);
+	const offsetMs = parts.asIfUtcMs - date.getTime();
+	const monthStartAsIfUtcMs = Date.UTC(parts.year, parts.month - 1, 1, 0, 0, 0);
+	return new Date(monthStartAsIfUtcMs - offsetMs);
+}
+
+/** How far through its month an instant is, in whole days. */
+export interface MonthProgress {
+	/** Days that have fully ended. Today is NOT one of them, so a rate built on this does not
+	 * collapse every morning when only a few hours of it have happened (D13). Zero on the 1st. */
+	completeElapsedDays: number;
+	daysInMonth: number;
+}
+
+/**
+ * How far through its month an instant is, read in `timeZone`.
+ *
+ * @param date - the instant to place within its month
+ * @param timeZone - IANA timezone name (this repo always passes `DASHBOARD_TIMEZONE`)
+ */
+export function monthProgressInTimezone(date: Date, timeZone: string): MonthProgress {
+	const parts = timezonePartsAsUtcMs(date, timeZone);
+	return {
+		completeElapsedDays: parts.day - 1,
+		// Day 0 of the NEXT month is the last day of this one — the standard way to get a month's
+		// length without a table of lengths and a leap-year rule.
+		daysInMonth: new Date(Date.UTC(parts.year, parts.month, 0)).getUTCDate(),
+	};
+}
+
+/**
+ * What this month is on course to cost (D13): the month-to-date daily rate, extended over the
+ * whole month. `null` before any day has fully ended — on the 1st the rate has no denominator,
+ * and inventing one would put a fabricated number where a projection belongs (D42).
+ *
+ * @param monthCostUsd - spend so far this month, today's partial day included
+ * @param completeElapsedDays - days that have fully ended
+ * @param daysInMonth - days in this calendar month
+ */
+export function projectMonthEndCost(
+	monthCostUsd: number,
+	completeElapsedDays: number,
+	daysInMonth: number,
+): number | null {
+	if (completeElapsedDays === 0) return null;
+	return (monthCostUsd / completeElapsedDays) * daysInMonth;
+}
+
+/** The three figures the KPI tiles show, plus the unpriced counts each of them is a lower bound
+ * against. Today's and the month's counts are tracked separately on purpose: a day with unpriced
+ * events does not make every OTHER day's total uncertain. */
+export interface MonthToDateSummary {
+	todayCostUsd: number;
+	todayUnpricedEventCount: number;
+	monthCostUsd: number;
+	monthUnpricedEventCount: number;
+}
+
+/**
+ * Reduces a month's per-day rows to what the KPI tiles show. A day with no recorded work simply
+ * has no row — including today, early enough in the morning — and reads as zero spend rather than
+ * as missing data.
+ *
+ * @param rows - every day from the start of the month to now
+ * @param todayKey - today's `YYYY-MM-DD` in the same calendar the rows are bucketed by
+ */
+export function summarizeMonthToDate(rows: DailyEfficiencyRow[], todayKey: string): MonthToDateSummary {
+	const today = rows.find((row) => row.day === todayKey);
+
+	return {
+		todayCostUsd: today?.totalCostUsd ?? 0,
+		todayUnpricedEventCount: today?.unpricedEventCount ?? 0,
+		// Today included: its partial spend is money already spent, not a forecast.
+		monthCostUsd: rows.reduce((sum, row) => sum + row.totalCostUsd, 0),
+		monthUnpricedEventCount: rows.reduce((sum, row) => sum + row.unpricedEventCount, 0),
+	};
+}
+
+/**
  * A zero-valued efficiency row for a day with no recorded work (D24) — the placeholder
  * `fillMissingDays` inserts so an absent day occupies its own position on the axis. Zeroing
  * `totalCostUsd` is what makes `subagentCostShare` and `cacheReadRatio` return `null` for the day,
@@ -507,6 +593,7 @@ export function emptyEfficiencyRow(day: string): DailyEfficiencyRow {
 		subagentCostUsd: 0,
 		totalEventCount: 0,
 		subagentEventCount: 0,
+		unpricedEventCount: 0,
 		inputTokens: 0,
 		cacheReadTokens: 0,
 		cacheWrite5mTokens: 0,

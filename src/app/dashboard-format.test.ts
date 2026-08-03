@@ -9,10 +9,14 @@ import {
 	fillMissingDays,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
+	monthProgressInTimezone,
+	projectMonthEndCost,
 	parseDashboardRange,
 	pivotForChart,
 	rankDimensionTotals,
 	startOfDayInTimezone,
+	startOfMonthInTimezone,
+	summarizeMonthToDate,
 	subagentCostShare,
 	summarizeUnpricedDays,
 } from "./dashboard-format";
@@ -64,6 +68,7 @@ function efficiencyRow(overrides: Partial<Parameters<typeof subagentCostShare>[0
 		subagentCostUsd: 0,
 		totalEventCount: 0,
 		subagentEventCount: 0,
+		unpricedEventCount: 0,
 		inputTokens: 0,
 		cacheReadTokens: 0,
 		cacheWrite5mTokens: 0,
@@ -352,4 +357,51 @@ test("the colour domain stretches to cover a window longer than the lookback, so
 	const domain = colorDomainWindow(twoYearsAgoMs, nowMs);
 
 	expect(domain.fromMs).toBe(twoYearsAgoMs);
+});
+
+test("startOfMonthInTimezone anchors month-to-date at local midnight on the 1st", () => {
+	// Local midnight on 2026-08-01 in UTC+7 is 17:00Z the previous day — using UTC midnight instead
+	// would silently drop the first seven hours of the month from every KPI.
+	expect(startOfMonthInTimezone(NOW, TZ).toISOString()).toBe("2026-07-31T17:00:00.000Z");
+});
+
+test("monthProgressInTimezone counts only days that have fully ended, so today never dilutes the rate (D13)", () => {
+	// 2026-08-03: the 1st and 2nd have ended; today has not. August has 31 days.
+	expect(monthProgressInTimezone(NOW, TZ)).toEqual({ completeElapsedDays: 2, daysInMonth: 31 });
+});
+
+test("projectMonthEndCost extends the daily rate over the whole month (D13)", () => {
+	// $100 across 2 complete days is $50/day; August has 31.
+	expect(projectMonthEndCost(100, 2, 31)).toBe(1550);
+});
+
+test("projectMonthEndCost is null on the 1st of the month, never a division by zero (D42)", () => {
+	// A guaranteed monthly event: on the 1st no day has ended, so there is no rate to extend.
+	expect(projectMonthEndCost(42, 0, 31)).toBeNull();
+});
+
+test("summarizeMonthToDate separates today's figures from the month's, so one unpriced day does not taint both", () => {
+	const summary = summarizeMonthToDate(
+		[
+			efficiencyRow({ day: "2026-08-01", totalCostUsd: 10, unpricedEventCount: 0 }),
+			efficiencyRow({ day: "2026-08-02", totalCostUsd: 20, unpricedEventCount: 0 }),
+			efficiencyRow({ day: "2026-08-03", totalCostUsd: 5, unpricedEventCount: 3 }),
+		],
+		"2026-08-03",
+	);
+
+	expect(summary).toEqual({
+		todayCostUsd: 5,
+		todayUnpricedEventCount: 3,
+		monthCostUsd: 35,
+		monthUnpricedEventCount: 3,
+	});
+});
+
+test("summarizeMonthToDate reads an absent today as zero spend, not as missing data", () => {
+	// Early enough in the morning, today has no row at all — the query only returns days with events.
+	const summary = summarizeMonthToDate([efficiencyRow({ day: "2026-08-01", totalCostUsd: 10 })], "2026-08-03");
+
+	expect(summary.todayCostUsd).toBe(0);
+	expect(summary.monthCostUsd).toBe(10);
 });
