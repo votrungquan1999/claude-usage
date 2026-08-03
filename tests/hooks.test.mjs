@@ -405,7 +405,11 @@ test("makes no network call when the tail holds no assistant turns yet (first pr
 });
 
 test("the hook exits well before a slow upload finishes, and the upload still completes after it exits", async () => {
-	const DELAY_MS = 500;
+	// How long the fake server sits on the response. This is the budget for the whole assertion
+	// below, so it has to comfortably exceed the cost of SPAWNING a node process — which is what
+	// `hookDuration` is almost entirely made of, and which a loaded machine can stretch well past
+	// half a second. At 500ms this test failed roughly one run in six.
+	const DELAY_MS = 2000;
 	const home = fakeHome({ machineId: "machine-abc" });
 	const projectDir = join(home, ".claude", "projects", "-Users-me-project");
 	const transcript = writeTranscript(projectDir, "session-3.jsonl", [
@@ -430,14 +434,19 @@ test("the hook exits well before a slow upload finishes, and the upload still co
 		const hookDuration = Date.now() - start;
 
 		assert.equal(code, 0);
-		// Relative, not absolute: the hook must return well before the slow upload would have —
-		// an absolute-ms budget flakes on a loaded machine.
+		// Returning in under half the server's delay can only happen if the hook did NOT wait for
+		// the upload — waiting would cost at least DELAY_MS. The threshold is a fraction of
+		// DELAY_MS rather than a fixed number of ms so raising the delay widens the budget with it.
 		assert.ok(hookDuration < DELAY_MS / 2, `hook took ${hookDuration}ms, expected well under ${DELAY_MS / 2}ms`);
 
 		// Poll for the detached child's own upload to complete — proves stdio:"ignore" +
 		// detached:true actually let it outlive the hook process, not merely that the hook
 		// itself returned quickly.
-		const deadline = Date.now() + 2000;
+		//
+		// Derived from DELAY_MS, NOT a fixed number: the server only records the request AFTER
+		// sitting on it for DELAY_MS, so a hardcoded window silently becomes too short the moment
+		// someone raises the delay — trading this test's flake for a worse one.
+		const deadline = Date.now() + DELAY_MS + 3000;
 		while (received.length === 0 && Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
