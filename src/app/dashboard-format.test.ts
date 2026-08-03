@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import {
 	assignSeriesColorSlots,
 	cacheReadRatio,
+	colorDomainWindow,
 	dayKeyInTimezone,
 	endOfDayInTimezone,
 	fillMissingDays,
@@ -332,4 +333,23 @@ test("preset=custom is rejected as input — it names no window of its own", () 
 
 	expect(view.preset).toBe("30d");
 	expect(view.fellBack).toBe(true);
+});
+
+test("the colour domain always reaches back at least a year, so a short window does not re-rank the palette (D21)", () => {
+	const nowMs = NOW.getTime();
+	const sevenDaysAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+
+	const domain = colorDomainWindow(sevenDaysAgoMs, nowMs);
+
+	expect(domain.fromMs).toBe(nowMs - 365 * 24 * 60 * 60 * 1000);
+	expect(domain.toMs).toBe(nowMs);
+});
+
+test("the colour domain stretches to cover a window longer than the lookback, so its oldest values stay ranked (D41)", () => {
+	const nowMs = NOW.getTime();
+	const twoYearsAgoMs = nowMs - 730 * 24 * 60 * 60 * 1000;
+
+	const domain = colorDomainWindow(twoYearsAgoMs, nowMs);
+
+	expect(domain.fromMs).toBe(twoYearsAgoMs);
 });

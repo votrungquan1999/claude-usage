@@ -306,6 +306,36 @@ export function dayKeyInTimezone(date: Date, timeZone: string): string {
 	return formatInstantInTimezone(date, timeZone).slice(0, 10);
 }
 
+/** A dimension's colour ordering is computed over at least this much history (D21), so the
+ * ordering barely moves as the operator switches windows. */
+const COLOR_DOMAIN_LOOKBACK_DAYS = 365;
+
+/** The window a dimension's colour ordering is ranked over. */
+export interface ColorDomainWindow {
+	fromMs: number;
+	toMs: number;
+}
+
+/**
+ * The window a dimension's colour ordering is computed over (D21/D41). Deliberately NOT the
+ * selected window:
+ *
+ * - It always ends at `now`, never at the selected window's end. A window ending in the past would
+ *   rank over a domain missing everything recorded since — so a value that has grown recently
+ *   would be absent from one window's domain and top of another's, shifting every slot below it.
+ *   That repaint is the exact defect D21 exists to remove.
+ * - It always starts at least a year back, and further when the selected window reaches further
+ *   (D41) — a window extending past the lookback would leave its oldest values unranked, which
+ *   falls back to rank-based colouring and reintroduces the same repaint.
+ *
+ * @param windowFromMs - the SELECTED window's start, epoch milliseconds
+ * @param nowMs - the instant the request is being served, epoch milliseconds
+ */
+export function colorDomainWindow(windowFromMs: number, nowMs: number): ColorDomainWindow {
+	const lookbackStartMs = nowMs - COLOR_DOMAIN_LOOKBACK_DAYS * DAY_MS;
+	return { fromMs: Math.min(windowFromMs, lookbackStartMs), toMs: nowMs };
+}
+
 /** Everything the dashboard's URL says about what is on screen (D7) — the whole view state, read
  * once on the server and passed down, never re-derived by a client component. */
 export interface DashboardView {

@@ -5,7 +5,7 @@ import { DASHBOARD_TIMEZONE } from "@/server/usage-queries";
 
 import { CardErrorBoundary } from "./card-error-boundary.ui";
 import { CostSplits } from "./cost-split-view/cost-splits";
-import { dayKeyInTimezone, parseDashboardRange } from "./dashboard-format";
+import { colorDomainWindow, dayKeyInTimezone, parseDashboardRange } from "./dashboard-format";
 import { loadEarliestEventMs } from "./dashboard-loaders";
 import {
 	CardErrorNotice,
@@ -20,10 +20,6 @@ import { RANGE_PRESET_LABELS, RangePresetOptions } from "./range-picker/range-pi
 import { DEFAULT_RANGE_PRESET, type DashboardWindowView } from "./range-picker/range-picker.type";
 import { SessionLookupForm } from "./session-lookup-form";
 import { SignOutButton } from "./sign-out-button";
-
-/** D21/D41 — colours are assigned from a value's rank over a window WIDER than any the operator
- * can select, so a value's colour never depends on the window on screen. */
-const COLOR_DOMAIN_LOOKBACK_MS = 365 * 24 * 60 * 60 * 1000;
 
 interface DashboardPageProps {
 	searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -44,6 +40,9 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
 	const fromMs = view.range.from.getTime();
 	const toMs = view.range.to.getTime();
+	// Ends at NOW, not at the selected window's end — see `colorDomainWindow` for why tying it to
+	// the window repaints the palette (D21/D41).
+	const colorDomain = colorDomainWindow(fromMs, now.getTime());
 
 	// The picker describes the window in the same calendar the charts bucket by, so the dates it
 	// shows and the bars below it always name the same days.
@@ -62,10 +61,6 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 		timeZone: DASHBOARD_TIMEZONE,
 		label: `${fromDay} \u2192 ${toDay}`,
 	};
-	// D41 — the lookback must reach at least as far back as the window itself; a window extending
-	// past it would leave its oldest values unranked and silently repaint the rest.
-	const domainFromMs = Math.min(fromMs, toMs - COLOR_DOMAIN_LOOKBACK_MS);
-
 	return (
 		// `useSearchParams` runs inside the shell; the boundary is Next's requirement for it.
 		<Suspense>
@@ -91,8 +86,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 					initialTab={view.tab}
 					fromMs={fromMs}
 					toMs={toMs}
-					domainFromMs={domainFromMs}
-					domainToMs={toMs}
+					domainFromMs={colorDomain.fromMs}
+					domainToMs={colorDomain.toMs}
 				/>
 
 				<Card>
