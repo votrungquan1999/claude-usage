@@ -1,15 +1,17 @@
-import type { DailyCostByDimensionRow } from "@/server/usage-queries";
+import { type CostSplitDimension, DASHBOARD_TIMEZONE } from "@/server/usage-queries";
 
 import {
 	assignSeriesColorSlots,
+	dayKeyInTimezone,
 	fillMissingDays,
 	pivotForChart,
 	rankDimensionTotals,
 	summarizeUnpricedDays,
 } from "../dashboard-format";
+import { loadCostPerDay, loadDimensionDomain } from "../dashboard-loaders";
 import { CostChart } from "./cost-chart";
 import type { SeriesColorMap } from "./cost-split-view.type";
-import { UnpricedRangeNotice } from "./cost-split-view.ui";
+import { CostSplitLayout, UnpricedRangeNotice } from "./cost-split-view.ui";
 import { DimensionTotalsTable } from "./dimension-totals-table";
 
 /**
@@ -31,31 +33,43 @@ const TOP_SERIES_COUNT = 5;
 const OTHER_COLOR = "var(--chart-other)";
 
 export interface CostSplitViewProps {
-	rows: DailyCostByDimensionRow[];
+	dimension: CostSplitDimension;
 	dimensionLabel: string;
-	/** The dimension's value domain, ordered range-independently (D21) — feeds
-	 * `assignSeriesColorSlots` so a value's colour never changes when the window changes. */
-	domainOrder: string[];
-	/** First day of the SELECTED window, `YYYY-MM-DD` in `DASHBOARD_TIMEZONE` (D11) — gap fill
-	 * spans what was asked for, not what happens to have data, so the axis never lies at its edges. */
-	firstDay: string;
-	/** Last day of the selected window, `YYYY-MM-DD` in `DASHBOARD_TIMEZONE`. */
-	lastDay: string;
+	/** Selected window, epoch milliseconds. Primitives, not a `DateRange`: the shared loaders
+	 * memoise on argument identity, and an object rebuilt per card silently re-runs the query. */
+	fromMs: number;
+	toMs: number;
+	/** The colour-domain lookback (D21/D41), epoch milliseconds — wider than any selectable
+	 * window, so a value's colour never depends on which window is on screen. */
+	domainFromMs: number;
+	domainToMs: number;
 }
 
 /**
  * One cost-per-day split view: a stacked bar chart capped to the top 5 dimension values plus
- * "Other", and the exact per-dimension totals table below it. Every visible series (chart bar or
+ * "Other", and the exact per-dimension totals table below it. Fetches its own rows rather than
+ * receiving them, so each split streams in independently. Every visible series (chart bar or
  * table row) resolves to a colour from the same `assignSeriesColorSlots` call, so a name and its
  * bar always agree (D21).
  */
-export function CostSplitView({
-	rows,
+export async function CostSplitView({
+	dimension,
 	dimensionLabel,
-	domainOrder,
-	firstDay,
-	lastDay,
-}: CostSplitViewProps): React.JSX.Element {
+	fromMs,
+	toMs,
+	domainFromMs,
+	domainToMs,
+}: CostSplitViewProps): Promise<React.JSX.Element> {
+	const [rows, domainOrder] = await Promise.all([
+		loadCostPerDay(dimension, fromMs, toMs),
+		loadDimensionDomain(dimension, domainFromMs, domainToMs),
+	]);
+
+	// The window's own first/last day, read in the dashboard's calendar (D11/D24) — gap fill spans
+	// what was requested, so a day with no work holds its place on the axis instead of vanishing.
+	const firstDay = dayKeyInTimezone(new Date(fromMs), DASHBOARD_TIMEZONE);
+	const lastDay = dayKeyInTimezone(new Date(toMs), DASHBOARD_TIMEZONE);
+
 	const totals = rankDimensionTotals(rows);
 	const topValues = totals.slice(0, TOP_SERIES_COUNT).map((total) => total.dimensionValue);
 	// Filled AFTER the pivot and the top-N cap: a synthetic row inserted earlier would carry no
@@ -76,10 +90,10 @@ export function CostSplitView({
 	const unpricedMessage = unpricedRangeMessage(unpriced.dayCount, unpriced.eventCount);
 
 	return (
-		<div className="grid gap-4 pt-4">
+		<CostSplitLayout>
 			{unpricedMessage !== null && <UnpricedRangeNotice>{unpricedMessage}</UnpricedRangeNotice>}
 			<CostChart data={chartData} seriesKeys={topValues} colors={seriesColors} />
 			<DimensionTotalsTable totals={totals} dimensionLabel={dimensionLabel} colors={tableColors} />
-		</div>
+		</CostSplitLayout>
 	);
 }

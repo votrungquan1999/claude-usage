@@ -1,152 +1,136 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getDatabase } from "@/server/database";
-import {
-	CostSplitDimension,
-	DASHBOARD_TIMEZONE,
-	costPerDay,
-	dailyEfficiency,
-	dimensionValueDomain,
-	type DateRange,
-} from "@/server/usage-queries";
+import { Suspense } from "react";
 
-import { CostSplitView } from "./cost-split-view/cost-split-view";
-import { dayKeyInTimezone, emptyEfficiencyRow, fillMissingDays, startOfDayInTimezone } from "./dashboard-format";
-import { CacheEfficiencyChart } from "./efficiency/cache-efficiency-chart";
-import { SubagentShareChart } from "./efficiency/subagent-share-chart";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DASHBOARD_TIMEZONE } from "@/server/usage-queries";
+
+import { CardErrorBoundary } from "./card-error-boundary.ui";
+import { CostSplits } from "./cost-split-view/cost-splits";
+import { parseDashboardRange } from "./dashboard-format";
+import { loadEarliestEventMs } from "./dashboard-loaders";
+import {
+	CardErrorNotice,
+	CardPlaceholder,
+	DashboardShell,
+	DashboardTitle,
+	RangeFallbackNotice,
+} from "./dashboard-shell.ui";
+import { CacheEfficiencyView } from "./efficiency/cache-efficiency-view";
+import { SubagentShareView } from "./efficiency/subagent-share-view";
+import { RANGE_PRESET_LABELS, RangePresetOptions } from "./range-picker/range-picker";
+import { DEFAULT_RANGE_PRESET } from "./range-picker/range-picker.type";
 import { SessionLookupForm } from "./session-lookup-form";
 import { SignOutButton } from "./sign-out-button";
 
-const RANGE_DAYS = 30;
-/** D21/D41 — the colour domain looks back further than any window this run's UI can select yet,
- * so a value's slot never depends on the currently selected window. */
-const COLOR_DOMAIN_LOOKBACK_DAYS = 365;
+/** D21/D41 — colours are assigned from a value's rank over a window WIDER than any the operator
+ * can select, so a value's colour never depends on the window on screen. */
+const COLOR_DOMAIN_LOOKBACK_MS = 365 * 24 * 60 * 60 * 1000;
 
-/**
- * The dashboard's default window — every query here carries a bounded `{from, to}` range so
- * the existing time indexes are used; an unbounded query is never issued. `from` is aligned to
- * a local-midnight day boundary (R38/D16) so the leftmost chart bar is always a full day, never
- * a rolling-window fragment (`to` stays "now" — today's own partial bar is expected).
- */
-function defaultRange(): DateRange {
-	const to = new Date();
-	const rollingFrom = new Date(to.getTime() - RANGE_DAYS * 24 * 60 * 60 * 1000);
-	const from = startOfDayInTimezone(rollingFrom, DASHBOARD_TIMEZONE);
-	return { from, to };
+interface DashboardPageProps {
+	searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 /**
- * The colour-domain lookback (D21) — a fixed, wide window independent of the operator's selected
- * range, so a value's chart colour never changes when the selected window changes.
+ * Dashboard root, gated by `src/proxy.ts`. Reads the whole view state out of the URL (D7) and
+ * composes the cards; it issues no card query itself — each card fetches what it alone needs, or
+ * reads a shared loader, so one slow query never holds up the rest of the page.
+ *
+ * @param searchParams - the request's query string, the sole source of which window is on screen
  */
-function colorDomainLookback(): DateRange {
-	const to = new Date();
-	const from = new Date(to.getTime() - COLOR_DOMAIN_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
-	return { from, to };
-}
+export default async function DashboardPage({ searchParams }: DashboardPageProps): Promise<React.JSX.Element> {
+	const params = readSearchParams(await searchParams);
+	const earliestMs = await loadEarliestEventMs();
+	const view = parseDashboardRange(
+		params,
+		new Date(),
+		earliestMs === null ? null : new Date(earliestMs),
+		DASHBOARD_TIMEZONE,
+	);
 
-/**
- * Dashboard root (Steps 19-20). Gated by `src/proxy.ts`. Fetches cost-per-day split by
- * machine/project/model, subagent cost share, and cache read-vs-write efficiency, all over the
- * same bounded default range, plus each split dimension's colour domain over a wider, fixed
- * lookback (D21).
- */
-export default async function DashboardPage(): Promise<React.JSX.Element> {
-	const range = defaultRange();
-	const lookback = colorDomainLookback();
-	const db = await getDatabase();
-
-	const [byMachine, byProject, byModel, efficiency, machineDomain, projectDomain, modelDomain] = await Promise.all([
-		costPerDay(db, CostSplitDimension.Machine, range),
-		costPerDay(db, CostSplitDimension.Project, range),
-		costPerDay(db, CostSplitDimension.Model, range),
-		dailyEfficiency(db, range),
-		dimensionValueDomain(db, CostSplitDimension.Machine, lookback),
-		dimensionValueDomain(db, CostSplitDimension.Project, lookback),
-		dimensionValueDomain(db, CostSplitDimension.Model, lookback),
-	]);
-
-	// The window's own first/last day, read in the dashboard's calendar (D11/D24) — gap fill spans
-	// what was requested, so a day with no work holds its place on the axis instead of vanishing.
-	const firstDay = dayKeyInTimezone(range.from, DASHBOARD_TIMEZONE);
-	const lastDay = dayKeyInTimezone(range.to, DASHBOARD_TIMEZONE);
-	const filledEfficiency = fillMissingDays(efficiency, firstDay, lastDay, emptyEfficiencyRow);
+	const fromMs = view.range.from.getTime();
+	const toMs = view.range.to.getTime();
+	// D41 — the lookback must reach at least as far back as the window itself; a window extending
+	// past it would leave its oldest values unranked and silently repaint the rest.
+	const domainFromMs = Math.min(fromMs, toMs - COLOR_DOMAIN_LOOKBACK_MS);
 
 	return (
-		<main className="grid gap-6 p-8">
-			<div className="grid grid-cols-[1fr_auto] items-center gap-4">
-				<h1 className="text-lg font-medium text-foreground">Claude Usage</h1>
-				<SignOutButton />
-			</div>
+		// `useSearchParams` runs inside the shell; the boundary is Next's requirement for it.
+		<Suspense>
+			<DashboardShell
+				header={
+					<>
+						<DashboardTitle>Claude Usage</DashboardTitle>
+						<SignOutButton />
+					</>
+				}
+				rangeValue={view.preset}
+				rangeLabels={RANGE_PRESET_LABELS}
+				rangeOptions={<RangePresetOptions />}
+				notice={
+					view.fellBack ? (
+						<RangeFallbackNotice>
+							{`That link asked for a window this dashboard cannot show — showing ${RANGE_PRESET_LABELS[DEFAULT_RANGE_PRESET].toLowerCase()} instead.`}
+						</RangeFallbackNotice>
+					) : null
+				}
+			>
+				<CostSplits
+					initialTab={view.tab}
+					fromMs={fromMs}
+					toMs={toMs}
+					domainFromMs={domainFromMs}
+					domainToMs={toMs}
+				/>
 
-			<Card>
-				<CardHeader>
-					<CardTitle>Cost per day — last {RANGE_DAYS} days</CardTitle>
-				</CardHeader>
-				<CardContent>
-					<Tabs defaultValue="machine">
-						<TabsList>
-							<TabsTrigger value="machine">Machine</TabsTrigger>
-							<TabsTrigger value="project">Project</TabsTrigger>
-							<TabsTrigger value="model">Model</TabsTrigger>
-						</TabsList>
-						<TabsContent value="machine">
-							<CostSplitView
-								rows={byMachine}
-								dimensionLabel="Machine"
-								domainOrder={machineDomain}
-								firstDay={firstDay}
-								lastDay={lastDay}
-							/>
-						</TabsContent>
-						<TabsContent value="project">
-							<CostSplitView
-								rows={byProject}
-								dimensionLabel="Project"
-								domainOrder={projectDomain}
-								firstDay={firstDay}
-								lastDay={lastDay}
-							/>
-						</TabsContent>
-						<TabsContent value="model">
-							<CostSplitView
-								rows={byModel}
-								dimensionLabel="Model"
-								domainOrder={modelDomain}
-								firstDay={firstDay}
-								lastDay={lastDay}
-							/>
-						</TabsContent>
-					</Tabs>
-				</CardContent>
-			</Card>
+				<Card>
+					<CardHeader>
+						<CardTitle>Subagent share of cost</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<CardErrorBoundary fallback={<CardErrorNotice>This card could not be loaded</CardErrorNotice>}>
+							<Suspense fallback={<CardPlaceholder />}>
+								<SubagentShareView fromMs={fromMs} toMs={toMs} />
+							</Suspense>
+						</CardErrorBoundary>
+					</CardContent>
+				</Card>
 
-			<Card>
-				<CardHeader>
-					<CardTitle>Subagent share of cost</CardTitle>
-				</CardHeader>
-				<CardContent>
-					<SubagentShareChart rows={filledEfficiency} />
-				</CardContent>
-			</Card>
+				<Card>
+					<CardHeader>
+						<CardTitle>Cache reads vs writes</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<CardErrorBoundary fallback={<CardErrorNotice>This card could not be loaded</CardErrorNotice>}>
+							<Suspense fallback={<CardPlaceholder />}>
+								<CacheEfficiencyView fromMs={fromMs} toMs={toMs} />
+							</Suspense>
+						</CardErrorBoundary>
+					</CardContent>
+				</Card>
 
-			<Card>
-				<CardHeader>
-					<CardTitle>Cache reads vs writes</CardTitle>
-				</CardHeader>
-				<CardContent>
-					<CacheEfficiencyChart rows={filledEfficiency} />
-				</CardContent>
-			</Card>
-
-			<Card>
-				<CardHeader>
-					<CardTitle>Open a session</CardTitle>
-				</CardHeader>
-				<CardContent>
-					<SessionLookupForm />
-				</CardContent>
-			</Card>
-		</main>
+				<Card>
+					<CardHeader>
+						<CardTitle>Open a session</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<SessionLookupForm />
+					</CardContent>
+				</Card>
+			</DashboardShell>
+		</Suspense>
 	);
+}
+
+/**
+ * Next's resolved search params as a `URLSearchParams`. A repeated key arrives as an array and is
+ * dropped rather than joined — a joined value would be a string nothing in the allowlist matches,
+ * which is the same outcome by a less obvious route.
+ *
+ * @param resolved - the awaited `searchParams`
+ */
+function readSearchParams(resolved: Record<string, string | string[] | undefined>): URLSearchParams {
+	const params = new URLSearchParams();
+	for (const [key, value] of Object.entries(resolved)) {
+		if (typeof value === "string") params.set(key, value);
+	}
+	return params;
 }

@@ -8,6 +8,7 @@ import {
 	costPerDay,
 	dailyEfficiency,
 	dimensionValueDomain,
+	earliestEventTimestamp,
 	getSessionBreakdown,
 	type DateRange,
 } from "./usage-queries";
@@ -469,4 +470,23 @@ test("a session that switched accounts mid-session reports its first chronologic
 	const summary = await getSessionBreakdown(db, "session-mixed-account");
 
 	expect(summary?.accountUuid).toBe("account-first");
+});
+
+test("earliestEventTimestamp reports the oldest recorded event, giving the widest window a real bound (D36)", async () => {
+	// Own database: this query spans the WHOLE collection, so it would otherwise see every event
+	// the other tests in this file leave behind.
+	const isolated = client.db("claude-usage-earliest");
+	await saveUsageEvents(isolated, [
+		event({ requestId: "req_mid", timestamp: new Date("2026-06-15T08:00:00.000Z") }),
+		event({ requestId: "req_oldest", timestamp: new Date("2026-05-30T02:00:00.000Z") }),
+		event({ requestId: "req_new", timestamp: new Date("2026-08-01T09:00:00.000Z") }),
+	]);
+
+	const earliest = await earliestEventTimestamp(isolated);
+
+	expect(earliest).toEqual(new Date("2026-05-30T02:00:00.000Z"));
+});
+
+test("earliestEventTimestamp is null on an empty corpus, so all-time has something to fall back from (D36)", async () => {
+	expect(await earliestEventTimestamp(client.db("claude-usage-empty"))).toBeNull();
 });

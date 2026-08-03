@@ -363,6 +363,22 @@ export async function costPerDay(
 	return dimensionRows.map(dropRepoKey);
 }
 
+/**
+ * The oldest recorded event's timestamp, or `null` when nothing has been recorded yet. This is
+ * what gives "all time" a real lower bound (D36) — every query must carry a time bound, so the
+ * widest window still resolves to `[this, now]` rather than running unbounded. Served from the
+ * `by_time` index as a one-document sorted read, never a scan.
+ *
+ * @param db - the connected database
+ */
+export async function earliestEventTimestamp(db: Db): Promise<Date | null> {
+	const oldest = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.findOne({}, { projection: { timestamp: 1 }, sort: { timestamp: 1 } });
+
+	return oldest?.timestamp ?? null;
+}
+
 /** `mergeByNormalizedDimension`/`mergeProjectRowsByRepoKey` key their dedup `Map` on `row.day`,
  * so reusing them for this day-less aggregation needs every row to carry the SAME constant day —
  * folding every row into one merge bucket per dimensionValue/repoKey, exactly like a real day

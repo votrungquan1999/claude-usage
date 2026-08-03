@@ -7,6 +7,7 @@ import {
 	fillMissingDays,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
+	parseDashboardRange,
 	pivotForChart,
 	rankDimensionTotals,
 	startOfDayInTimezone,
@@ -205,4 +206,76 @@ test("formatInstantInTimezone renders the same calendar day the charts bucket in
 	// one calendar day later than its own UTC date (2026-06-01).
 	const formatted = formatInstantInTimezone(new Date("2026-06-01T17:00:01.000Z"), "Asia/Ho_Chi_Minh");
 	expect(formatted).toBe("2026-06-02 00:00:01");
+});
+
+/** UTC+7, so a local day starts at 17:00Z the previous calendar day. */
+const TZ = "Asia/Ho_Chi_Minh";
+/** 2026-08-03 17:00 local — mid-afternoon, well clear of either midnight boundary. */
+const NOW = new Date("2026-08-03T10:00:00.000Z");
+/** The real corpus's first day, far enough back that the D36 clamp is a no-op for short presets. */
+const EARLIEST = new Date("2026-05-30T02:00:00.000Z");
+
+test("an empty URL selects the default 30-day window, ending now and starting at a local midnight", () => {
+	const view = parseDashboardRange(new URLSearchParams(), NOW, EARLIEST, TZ);
+
+	// 30 calendar days COUNTING today, so the chart draws 30 bars under a "last 30 days" label:
+	// 2026-07-05 is 29 days before 2026-08-03, and its local midnight is 17:00Z the day before.
+	expect(view.range.from.toISOString()).toBe("2026-07-04T17:00:00.000Z");
+	expect(view.range.to).toEqual(NOW);
+});
+
+test("a preset in the URL selects that window, counting today as its last day", () => {
+	const view = parseDashboardRange(new URLSearchParams("preset=7d"), NOW, EARLIEST, TZ);
+
+	// 2026-07-28 through 2026-08-03 inclusive is 7 days; its local midnight is 17:00Z the day before.
+	expect(view.range.from.toISOString()).toBe("2026-07-27T17:00:00.000Z");
+	expect(view.preset).toBe("7d");
+});
+
+test("the all-time preset starts at the earliest recorded event, so the query still carries a bound (D36)", () => {
+	const view = parseDashboardRange(new URLSearchParams("preset=all"), NOW, EARLIEST, TZ);
+
+	// Local midnight of the earliest event's own local day (2026-05-30), not the raw event instant —
+	// a partial first bar would misreport that day's spend.
+	expect(view.range.from.toISOString()).toBe("2026-05-29T17:00:00.000Z");
+	expect(view.fellBack).toBe(false);
+});
+
+test("all-time on an empty corpus falls back to the default window and says so (D36/D37)", () => {
+	const view = parseDashboardRange(new URLSearchParams("preset=all"), NOW, null, TZ);
+
+	expect(view.preset).toBe("30d");
+	expect(view.range.from.toISOString()).toBe("2026-07-04T17:00:00.000Z");
+	expect(view.fellBack).toBe(true);
+});
+
+test("a preset this app does not offer falls back to the default window and says so (D37)", () => {
+	const view = parseDashboardRange(new URLSearchParams("preset=5y"), NOW, EARLIEST, TZ);
+
+	expect(view.preset).toBe("30d");
+	expect(view.range.from.toISOString()).toBe("2026-07-04T17:00:00.000Z");
+	// A silently corrected parameter is a lie about which period is on screen.
+	expect(view.fellBack).toBe(true);
+});
+
+test("a window is clamped so it never reaches back before the first recorded event (D36)", () => {
+	// 90 days before 2026-08-03 is early May, but nothing was recorded before 2026-05-30 — without
+	// the clamp, gap fill would synthesize ~25 rows for days the corpus never covered.
+	const view = parseDashboardRange(new URLSearchParams("preset=90d"), NOW, EARLIEST, TZ);
+
+	expect(view.range.from.toISOString()).toBe("2026-05-29T17:00:00.000Z");
+	// The clamp narrows the window; it is not a fallback, so the page has nothing to announce.
+	expect(view.preset).toBe("90d");
+	expect(view.fellBack).toBe(false);
+});
+
+test("the active split tab is read from the URL, so a view is shareable (D8)", () => {
+	expect(parseDashboardRange(new URLSearchParams("tab=model"), NOW, EARLIEST, TZ).tab).toBe("model");
+});
+
+test("a tab naming a field the app never splits by is rejected, not passed through to a query (D30)", () => {
+	// `costPerDay` interpolates the tab's dimension straight into `$group` as a field name, so an
+	// open `?tab=` would let a URL split spend by an internal identity field. Closed allowlist.
+	expect(parseDashboardRange(new URLSearchParams("tab=requestId"), NOW, EARLIEST, TZ).tab).toBe("machine");
+	expect(parseDashboardRange(new URLSearchParams("tab=accountUuid"), NOW, EARLIEST, TZ).tab).toBe("machine");
 });

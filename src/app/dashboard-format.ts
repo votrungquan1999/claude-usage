@@ -1,4 +1,8 @@
-import type { DailyCostByDimensionRow, DailyEfficiencyRow } from "@/server/usage-queries";
+import type { DailyCostByDimensionRow, DailyEfficiencyRow, DateRange } from "@/server/usage-queries";
+
+import { DEFAULT_SPLIT_TAB, SplitTab } from "./cost-split-view/cost-split-view.type";
+import { RANGE_PRESET_PARAM, SPLIT_TAB_PARAM } from "./href";
+import { DEFAULT_RANGE_PRESET, PRESET_DAY_SPANS, RangePreset } from "./range-picker/range-picker.type";
 
 /** A dimension value's total across a whole range — feeds the ranked summary table. */
 export interface DimensionTotal {
@@ -278,6 +282,86 @@ export function cacheReadRatio(row: DailyEfficiencyRow): number | null {
  */
 export function dayKeyInTimezone(date: Date, timeZone: string): string {
 	return formatInstantInTimezone(date, timeZone).slice(0, 10);
+}
+
+/** Everything the dashboard's URL says about what is on screen (D7) — the whole view state, read
+ * once on the server and passed down, never re-derived by a client component. */
+export interface DashboardView {
+	preset: RangePreset;
+	range: DateRange;
+	tab: SplitTab;
+	/** D37 — true when a supplied RANGE parameter was unusable and the window fell back to the
+	 * default, so the page can say so. A rejected `tab` does not set this: it changes which split is
+	 * shown, not which period, and silently defaulting it is the D30 allowlist working as intended. */
+	fellBack: boolean;
+}
+
+/**
+ * Reads the dashboard's view state out of the URL (D7). Takes `now` and the corpus's earliest
+ * event as parameters rather than reaching for `new Date()` or a query, so every rule below is
+ * testable. Unrecognised values fall back to the default rather than reaching a query (D30/D37),
+ * and every window is clamped to `[earliest recorded event, now]` (D36) — an unclamped `from`
+ * would have gap fill (D11) synthesize thousands of day rows from a URL parameter.
+ *
+ * @param params - the request's search parameters
+ * @param now - the instant the request is being served
+ * @param earliestEvent - timestamp of the oldest recorded event, or `null` on an empty corpus
+ * @param timeZone - IANA timezone name (this repo always passes `DASHBOARD_TIMEZONE`)
+ */
+export function parseDashboardRange(
+	params: URLSearchParams,
+	now: Date,
+	earliestEvent: Date | null,
+	timeZone: string,
+): DashboardView {
+	const tab = parseSplitTab(params.get(SPLIT_TAB_PARAM));
+
+	const rawPreset = params.get(RANGE_PRESET_PARAM);
+	const requested = parseRangePreset(rawPreset);
+	// Present-but-unrecognised, not merely absent — an absent preset is the default, which is
+	// nothing to announce; a supplied one the app can't honour changes the period on screen (D37).
+	const unusablePreset = rawPreset !== null && requested === null;
+	// "All time" has no lower bound of its own; on an empty corpus there is nothing to anchor it to.
+	const allTimeWithoutData = requested === RangePreset.AllTime && earliestEvent === null;
+	const fellBack = unusablePreset || allTimeWithoutData;
+	const preset = fellBack ? DEFAULT_RANGE_PRESET : (requested ?? DEFAULT_RANGE_PRESET);
+
+	const earliestDayStart = earliestEvent === null ? null : startOfDayInTimezone(earliestEvent, timeZone);
+	const spanStart =
+		preset === RangePreset.AllTime && earliestDayStart !== null
+			? earliestDayStart
+			: startOfDayInTimezone(new Date(now.getTime() - (PRESET_DAY_SPANS[preset] - 1) * DAY_MS), timeZone);
+
+	// D36 — no window may reach back before the first recorded event. Without this, gap fill (D11)
+	// would synthesize a row per day across whatever span a URL parameter asked for.
+	const from = earliestDayStart !== null && spanStart < earliestDayStart ? earliestDayStart : spanStart;
+
+	return { preset, range: { from, to: now }, tab, fellBack };
+}
+
+/** One calendar day. Preset spans step back in whole days from `now`; `DASHBOARD_TIMEZONE` has no
+ * DST, so fixed-length arithmetic lands on the intended local day. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A `?preset=` value, or `null` when it names no preset this app offers (D30 closed allowlist).
+ *
+ * @param raw - the raw parameter value, or `null` when the key is absent
+ */
+function parseRangePreset(raw: string | null): RangePreset | null {
+	const presets: string[] = Object.values(RangePreset);
+	return raw !== null && presets.includes(raw) ? (raw as RangePreset) : null;
+}
+
+/**
+ * A `?tab=` value, falling back to the default split. D30 — the tab selects the field `costPerDay`
+ * interpolates into its `$group`, so this allowlist is a security boundary, not input tidying.
+ *
+ * @param raw - the raw parameter value, or `null` when the key is absent
+ */
+function parseSplitTab(raw: string | null): SplitTab {
+	const tabs: string[] = Object.values(SplitTab);
+	return raw !== null && tabs.includes(raw) ? (raw as SplitTab) : DEFAULT_SPLIT_TAB;
 }
 
 /**
