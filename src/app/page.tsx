@@ -11,7 +11,7 @@ import {
 } from "@/server/usage-queries";
 
 import { CostSplitView } from "./cost-split-view/cost-split-view";
-import { startOfDayInTimezone } from "./dashboard-format";
+import { dayKeyInTimezone, emptyEfficiencyRow, fillMissingDays, startOfDayInTimezone } from "./dashboard-format";
 import { CacheEfficiencyChart } from "./efficiency/cache-efficiency-chart";
 import { SubagentShareChart } from "./efficiency/subagent-share-chart";
 import { SessionLookupForm } from "./session-lookup-form";
@@ -66,6 +66,12 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
 		dimensionValueDomain(db, CostSplitDimension.Model, lookback),
 	]);
 
+	// The window's own first/last day, read in the dashboard's calendar (D11/D24) — gap fill spans
+	// what was requested, so a day with no work holds its place on the axis instead of vanishing.
+	const firstDay = dayKeyInTimezone(range.from, DASHBOARD_TIMEZONE);
+	const lastDay = dayKeyInTimezone(range.to, DASHBOARD_TIMEZONE);
+	const filledEfficiency = fillMissingDays(efficiency, firstDay, lastDay, emptyEfficiencyRow);
+
 	return (
 		<main className="grid gap-6 p-8">
 			<div className="grid grid-cols-[1fr_auto] items-center gap-4">
@@ -85,13 +91,31 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
 							<TabsTrigger value="model">Model</TabsTrigger>
 						</TabsList>
 						<TabsContent value="machine">
-							<CostSplitView rows={byMachine} dimensionLabel="Machine" domainOrder={machineDomain} />
+							<CostSplitView
+								rows={byMachine}
+								dimensionLabel="Machine"
+								domainOrder={machineDomain}
+								firstDay={firstDay}
+								lastDay={lastDay}
+							/>
 						</TabsContent>
 						<TabsContent value="project">
-							<CostSplitView rows={byProject} dimensionLabel="Project" domainOrder={projectDomain} />
+							<CostSplitView
+								rows={byProject}
+								dimensionLabel="Project"
+								domainOrder={projectDomain}
+								firstDay={firstDay}
+								lastDay={lastDay}
+							/>
 						</TabsContent>
 						<TabsContent value="model">
-							<CostSplitView rows={byModel} dimensionLabel="Model" domainOrder={modelDomain} />
+							<CostSplitView
+								rows={byModel}
+								dimensionLabel="Model"
+								domainOrder={modelDomain}
+								firstDay={firstDay}
+								lastDay={lastDay}
+							/>
 						</TabsContent>
 					</Tabs>
 				</CardContent>
@@ -102,7 +126,7 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
 					<CardTitle>Subagent share of cost</CardTitle>
 				</CardHeader>
 				<CardContent>
-					<SubagentShareChart rows={efficiency} />
+					<SubagentShareChart rows={filledEfficiency} />
 				</CardContent>
 			</Card>
 
@@ -111,7 +135,7 @@ export default async function DashboardPage(): Promise<React.JSX.Element> {
 					<CardTitle>Cache reads vs writes</CardTitle>
 				</CardHeader>
 				<CardContent>
-					<CacheEfficiencyChart rows={efficiency} />
+					<CacheEfficiencyChart rows={filledEfficiency} />
 				</CardContent>
 			</Card>
 

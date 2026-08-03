@@ -15,6 +15,9 @@ export interface ChartDayRow {
 	 * chart layer's only signal that a bar (possibly zero-height) is a lower bound, not a
 	 * measured zero. */
 	unpricedEventCount: number;
+	/** Events actually recorded on this day (D24). Once absent days are gap-filled, row count no
+	 * longer distinguishes "no work in range" from "a range of empty days" — this does. */
+	eventCount: number;
 	[seriesKey: string]: string | number;
 }
 
@@ -75,9 +78,10 @@ export function pivotForChart(rows: DailyCostByDimensionRow[], topValues: string
 
 	for (const row of rows) {
 		const seriesKey = topSet.has(row.dimensionValue) ? row.dimensionValue : "Other";
-		const dayRow = byDay.get(row.day) ?? { day: row.day, unpricedEventCount: 0 };
+		const dayRow = byDay.get(row.day) ?? { day: row.day, unpricedEventCount: 0, eventCount: 0 };
 		dayRow[seriesKey] = (Number(dayRow[seriesKey]) || 0) + row.costUsd;
 		dayRow.unpricedEventCount += row.unpricedEventCount;
+		dayRow.eventCount += row.eventCount;
 		byDay.set(row.day, dayRow);
 	}
 
@@ -120,6 +124,45 @@ export function assignSeriesColorSlots(shownValues: string[], domainOrder: strin
 		colors[value] = SERIES_COLOR_SLOTS[resolvedSlot];
 	}
 	return colors;
+}
+
+/**
+ * Fills every absent calendar day between `firstDay` and `lastDay` inclusive with `makeEmpty`'s
+ * result (D11/D24) — never overwrites a day already present in `rows`. Generic over the row
+ * shape so the same function fills both `ChartDayRow[]` and `DailyEfficiencyRow[]`.
+ *
+ * @param rows - existing rows, each carrying its own `day`
+ * @param firstDay - `YYYY-MM-DD`, inclusive
+ * @param lastDay - `YYYY-MM-DD`, inclusive
+ * @param makeEmpty - builds the placeholder row for one absent day
+ */
+export function fillMissingDays<T extends { day: string }>(
+	rows: T[],
+	firstDay: string,
+	lastDay: string,
+	makeEmpty: (day: string) => T,
+): T[] {
+	// Keyed by day so a real row always wins — building empties first and writing reals over them
+	// would erase a day's own unpricedEventCount, silently deleting a D17 lower-bound warning.
+	const present = new Map(rows.map((row) => [row.day, row]));
+
+	const filled: T[] = [];
+	for (let day = firstDay; day <= lastDay; day = nextDay(day)) {
+		filled.push(present.get(day) ?? makeEmpty(day));
+	}
+	return filled;
+}
+
+/**
+ * The calendar day after `day`. Walks through `Date.UTC` rather than the dashboard timezone
+ * because these strings are wall-clock labels, not instants — enumerating them in UTC keeps the
+ * walk immune to the DST bug `startOfDayInTimezone` carries for zones that observe it.
+ *
+ * @param day - `YYYY-MM-DD`
+ */
+function nextDay(day: string): string {
+	const [year, month, date] = day.split("-").map(Number);
+	return new Date(Date.UTC(year, month - 1, date + 1)).toISOString().slice(0, 10);
 }
 
 /** Range-level summary of which days/events in a chart's data are unpriced (D5) — the single
@@ -223,4 +266,38 @@ export function cacheReadRatio(row: DailyEfficiencyRow): number | null {
 	const totalCacheTokens = row.cacheReadTokens + row.cacheWrite5mTokens + row.cacheWrite1hTokens;
 	if (totalCacheTokens === 0) return null;
 	return row.cacheReadTokens / totalCacheTokens;
+}
+
+/**
+ * The calendar day an instant falls on, as `YYYY-MM-DD`, read in `timeZone` — the same calendar
+ * every chart buckets by. Gap-fill bounds must come from here rather than from the instant's UTC
+ * date, or the first and last bar of a range land on the wrong day at UTC+7.
+ *
+ * @param date - the instant to read
+ * @param timeZone - IANA timezone name (this repo always passes `DASHBOARD_TIMEZONE`)
+ */
+export function dayKeyInTimezone(date: Date, timeZone: string): string {
+	return formatInstantInTimezone(date, timeZone).slice(0, 10);
+}
+
+/**
+ * A zero-valued efficiency row for a day with no recorded work (D24) — the placeholder
+ * `fillMissingDays` inserts so an absent day occupies its own position on the axis. Zeroing
+ * `totalCostUsd` is what makes `subagentCostShare` and `cacheReadRatio` return `null` for the day,
+ * which is what finally makes the lines' `connectNulls={false}` draw a real break across a gap.
+ *
+ * @param day - `YYYY-MM-DD`
+ */
+export function emptyEfficiencyRow(day: string): DailyEfficiencyRow {
+	return {
+		day,
+		totalCostUsd: 0,
+		subagentCostUsd: 0,
+		totalEventCount: 0,
+		subagentEventCount: 0,
+		inputTokens: 0,
+		cacheReadTokens: 0,
+		cacheWrite5mTokens: 0,
+		cacheWrite1hTokens: 0,
+	};
 }

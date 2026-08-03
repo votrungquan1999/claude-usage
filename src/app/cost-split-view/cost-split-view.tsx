@@ -1,9 +1,15 @@
 import type { DailyCostByDimensionRow } from "@/server/usage-queries";
 
-import { assignSeriesColorSlots, pivotForChart, rankDimensionTotals, summarizeUnpricedDays } from "../dashboard-format";
+import {
+	assignSeriesColorSlots,
+	fillMissingDays,
+	pivotForChart,
+	rankDimensionTotals,
+	summarizeUnpricedDays,
+} from "../dashboard-format";
 import { CostChart } from "./cost-chart";
-import { UnpricedRangeNotice } from "./cost-split-view.ui";
 import type { SeriesColorMap } from "./cost-split-view.type";
+import { UnpricedRangeNotice } from "./cost-split-view.ui";
 import { DimensionTotalsTable } from "./dimension-totals-table";
 
 /**
@@ -30,6 +36,11 @@ export interface CostSplitViewProps {
 	/** The dimension's value domain, ordered range-independently (D21) — feeds
 	 * `assignSeriesColorSlots` so a value's colour never changes when the window changes. */
 	domainOrder: string[];
+	/** First day of the SELECTED window, `YYYY-MM-DD` in `DASHBOARD_TIMEZONE` (D11) — gap fill
+	 * spans what was asked for, not what happens to have data, so the axis never lies at its edges. */
+	firstDay: string;
+	/** Last day of the selected window, `YYYY-MM-DD` in `DASHBOARD_TIMEZONE`. */
+	lastDay: string;
 }
 
 /**
@@ -38,10 +49,23 @@ export interface CostSplitViewProps {
  * table row) resolves to a colour from the same `assignSeriesColorSlots` call, so a name and its
  * bar always agree (D21).
  */
-export function CostSplitView({ rows, dimensionLabel, domainOrder }: CostSplitViewProps): React.JSX.Element {
+export function CostSplitView({
+	rows,
+	dimensionLabel,
+	domainOrder,
+	firstDay,
+	lastDay,
+}: CostSplitViewProps): React.JSX.Element {
 	const totals = rankDimensionTotals(rows);
 	const topValues = totals.slice(0, TOP_SERIES_COUNT).map((total) => total.dimensionValue);
-	const chartData = pivotForChart(rows, topValues);
+	// Filled AFTER the pivot and the top-N cap: a synthetic row inserted earlier would carry no
+	// dimensionValue, and any placeholder one would rank as a phantom series — landing inside the
+	// top 5 on a narrow window and folding into "Other" on a wide one (D11/D24).
+	const chartData = fillMissingDays(pivotForChart(rows, topValues), firstDay, lastDay, (day) => ({
+		day,
+		unpricedEventCount: 0,
+		eventCount: 0,
+	}));
 	const seriesColors = assignSeriesColorSlots(topValues, domainOrder);
 
 	const tableColors: SeriesColorMap = Object.fromEntries(

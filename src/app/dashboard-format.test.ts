@@ -3,6 +3,8 @@ import { expect, test } from "vitest";
 import {
 	assignSeriesColorSlots,
 	cacheReadRatio,
+	dayKeyInTimezone,
+	fillMissingDays,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
 	pivotForChart,
@@ -40,7 +42,7 @@ test("pivotForChart folds a dimension value outside topValues into Other", () =>
 		["work-mac"],
 	);
 
-	expect(rows).toEqual([{ day: "2026-08-01", "work-mac": 1, Other: 4, unpricedEventCount: 0 }]);
+	expect(rows).toEqual([{ day: "2026-08-01", "work-mac": 1, Other: 4, unpricedEventCount: 0, eventCount: 2 }]);
 });
 
 test("pivotForChart carries a day's unpriced event count so an all-unpriced day is distinguishable from a real zero (R41/D17)", () => {
@@ -117,10 +119,59 @@ test("assignSeriesColorSlots gives a shown value ranked beyond the palette size 
 	expect(colors.overflow).toBe("var(--chart-2)");
 });
 
+test("fillMissingDays inserts an absent day between two present days without altering them (D11/D24)", () => {
+	const rows = [
+		{ day: "2026-06-01", value: 1 },
+		{ day: "2026-06-03", value: 3 },
+	];
+
+	const filled = fillMissingDays(rows, "2026-06-01", "2026-06-03", (day) => ({ day, value: 0 }));
+
+	expect(filled).toEqual([
+		{ day: "2026-06-01", value: 1 },
+		{ day: "2026-06-02", value: 0 },
+		{ day: "2026-06-03", value: 3 },
+	]);
+});
+
+test("dayKeyInTimezone reads an instant's day in the dashboard's zone, not UTC (R38/D16)", () => {
+	// 17:30 UTC on 2026-06-30 is already 00:30 on 2026-07-01 in Asia/Ho_Chi_Minh (UTC+7). Gap fill
+	// bounds must come from the same calendar the chart buckets by, or the first/last bar is wrong.
+	expect(dayKeyInTimezone(new Date("2026-06-30T17:30:00Z"), "Asia/Ho_Chi_Minh")).toBe("2026-07-01");
+});
+
+test("pivotForChart carries a day's event count so a gap-filled day stays distinguishable from a recorded one (D24)", () => {
+	const rows = pivotForChart(
+		[
+			{ day: "2026-08-01", dimensionValue: "work-mac", costUsd: 1, unpricedEventCount: 0, eventCount: 4 },
+			{ day: "2026-08-01", dimensionValue: "rare-mac", costUsd: 4, unpricedEventCount: 0, eventCount: 3 },
+		],
+		["work-mac"],
+	);
+
+	expect(rows[0].eventCount).toBe(7);
+});
+
+test("fillMissingDays never overwrites a real day, so a lower-bound warning survives the fill (D24)", () => {
+	const rows = [{ day: "2026-06-02", unpricedEventCount: 7, costUsd: 12.5 }];
+
+	const filled = fillMissingDays(rows, "2026-06-01", "2026-06-03", (day) => ({
+		day,
+		unpricedEventCount: 0,
+		costUsd: 0,
+	}));
+
+	expect(filled).toEqual([
+		{ day: "2026-06-01", unpricedEventCount: 0, costUsd: 0 },
+		{ day: "2026-06-02", unpricedEventCount: 7, costUsd: 12.5 },
+		{ day: "2026-06-03", unpricedEventCount: 0, costUsd: 0 },
+	]);
+});
+
 test("summarizeUnpricedDays reports nothing when no day has an unpriced event", () => {
 	const summary = summarizeUnpricedDays([
-		{ day: "2026-08-01", unpricedEventCount: 0, "work-mac": 1 },
-		{ day: "2026-08-02", unpricedEventCount: 0, "work-mac": 2 },
+		{ day: "2026-08-01", unpricedEventCount: 0, eventCount: 1, "work-mac": 1 },
+		{ day: "2026-08-02", unpricedEventCount: 0, eventCount: 1, "work-mac": 2 },
 	]);
 
 	expect(summary).toEqual({ days: [], dayCount: 0, eventCount: 0 });
@@ -128,16 +179,16 @@ test("summarizeUnpricedDays reports nothing when no day has an unpriced event", 
 
 test("summarizeUnpricedDays lists the affected days and sums events across them (D5)", () => {
 	const summary = summarizeUnpricedDays([
-		{ day: "2026-08-01", unpricedEventCount: 3, "work-mac": 1 },
-		{ day: "2026-08-02", unpricedEventCount: 0, "work-mac": 2 },
-		{ day: "2026-08-03", unpricedEventCount: 2, "work-mac": 1 },
+		{ day: "2026-08-01", unpricedEventCount: 3, eventCount: 3, "work-mac": 1 },
+		{ day: "2026-08-02", unpricedEventCount: 0, eventCount: 5, "work-mac": 2 },
+		{ day: "2026-08-03", unpricedEventCount: 2, eventCount: 2, "work-mac": 1 },
 	]);
 
 	expect(summary).toEqual({ days: ["2026-08-01", "2026-08-03"], dayCount: 2, eventCount: 5 });
 });
 
 test("summarizeUnpricedDays includes a fully-unpriced day (zero priced cost, zero-height bar) — it must not be invisible twice over", () => {
-	const summary = summarizeUnpricedDays([{ day: "2026-07-01", unpricedEventCount: 4 }]);
+	const summary = summarizeUnpricedDays([{ day: "2026-07-01", unpricedEventCount: 4, eventCount: 4 }]);
 
 	expect(summary.days).toEqual(["2026-07-01"]);
 });

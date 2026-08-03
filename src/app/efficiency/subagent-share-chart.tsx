@@ -21,7 +21,9 @@ export interface SubagentShareChartProps {
  * title, so no legend box — a day with zero priced cost renders as a gap, never a false 0%.
  */
 export function SubagentShareChart({ rows }: SubagentShareChartProps): React.JSX.Element {
-	if (rows.length === 0) {
+	// `totalEventCount`, not `eventCount` — and not `rows.length`, which stops meaning "no work"
+	// once absent days are gap-filled (D24).
+	if (rows.every((row) => row.totalEventCount === 0)) {
 		return <p className="py-6 text-center text-sm text-muted-foreground">No data in this range</p>;
 	}
 

@@ -33,6 +33,14 @@ export interface CostChartProps {
  * `cost-split-view.tsx`/`cost-split-view.ui.tsx` (D5) — this component carries no per-day marker.
  */
 export function CostChart({ data, seriesKeys, colors }: CostChartProps): React.JSX.Element {
+	// Not `data.length === 0`: once absent days are gap-filled (D24) a dead range is 30 zero rows,
+	// not an empty list, so row count stops distinguishing "no work" from "a run of empty days".
+	if (data.every((row) => row.eventCount === 0)) {
+		return (
+			<div className="grid h-64 w-full place-items-center text-sm text-muted-foreground">No data in this range</div>
+		);
+	}
+
 	const hasOther = data.some((row) => "Other" in row);
 	const ids = seriesKeys.map((_, index) => `s${index}`);
 
@@ -52,12 +60,6 @@ export function CostChart({ data, seriesKeys, colors }: CostChartProps): React.J
 	});
 
 	const barIds = hasOther ? [...ids, "other"] : ids;
-
-	if (data.length === 0) {
-		return (
-			<div className="grid h-64 w-full place-items-center text-sm text-muted-foreground">No data in this range</div>
-		);
-	}
 
 	return (
 		<ChartContainer config={config} className="aspect-auto h-64 w-full">
