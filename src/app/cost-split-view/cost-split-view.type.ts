@@ -12,6 +12,7 @@ export enum SplitTab {
 	Machine = "machine",
 	Project = "project",
 	Model = "model",
+	Repo = "repo",
 }
 
 /** The split shown when the URL names no tab. Omitted from generated links (`dashboardHref`). */

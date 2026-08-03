@@ -13,11 +13,14 @@ export interface DateRange {
 	to: Date;
 }
 
-/** Which stored field to split a cost-per-day view by. */
+/** Which stored field to split a cost-per-day view by. `Repo` is the odd one out: its stored
+ * value is an opaque hash, not a label, so it never reaches a row's `dimensionValue` — see
+ * `groupingFieldFor`. */
 export enum CostSplitDimension {
 	Machine = "machineId",
 	Project = "projectSlug",
 	Model = "model",
+	Repo = "repoKey",
 }
 
 /**
@@ -331,13 +334,13 @@ export async function costPerDay(
 				$group: {
 					_id: {
 						day: { $dateToString: { date: "$timestamp", format: "%Y-%m-%d", timezone: DASHBOARD_TIMEZONE } },
-						dimensionValue: `$${dimension}`,
+						dimensionValue: `$${groupingFieldFor(dimension)}`,
 					},
 					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
 					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
 					eventCount: { $sum: 1 },
-					// Only consumed for the Project dimension's D20 rollup below — harmless (and
-					// cheap) to compute for Machine/Model too rather than branching the pipeline.
+					// Consumed by the Project and Repo rollups below — harmless (and cheap) to
+					// compute for Machine/Model too rather than branching the pipeline.
 					repoKey: { $first: "$repoKey" },
 				},
 			},
@@ -367,7 +370,22 @@ export async function costPerDay(
 	// repo can share a prefix with a genuine worktree pair). repoKey is opaque, so the merged
 	// row is labeled with the SHORTEST projectSlug in the group (the main checkout).
 	if (dimension === CostSplitDimension.Project) return mergeProjectRowsByRepoKey(dimensionRows).map(dropRepoKey);
+	// D14/D31: the same repoKey grouping as Project, but every repo-less row folds into ONE named
+	// bucket — on this tab "no repository" is a single real answer.
+	if (dimension === CostSplitDimension.Repo) return mergeRepoRows(dimensionRows).map(dropRepoKey);
 	return dimensionRows.map(dropRepoKey);
+}
+
+/**
+ * Which stored field a dimension's `$group` reads its label from. Every dimension reads its own
+ * field except `Repo`, which reads the project slug: `repoKey` is an unsalted SHA-256 over a
+ * normalised git remote, so it is dictionary-confirmable — an identifier, not an opaque token —
+ * and interpolating it here would put it straight into a visible row label (D31).
+ *
+ * @param dimension - the split being grouped
+ */
+function groupingFieldFor(dimension: CostSplitDimension): string {
+	return dimension === CostSplitDimension.Repo ? CostSplitDimension.Project : dimension;
 }
 
 /**
@@ -411,7 +429,7 @@ export async function dimensionValueDomain(db: Db, dimension: CostSplitDimension
 			{ $match: { timestamp: { $gte: lookbackRange.from, $lte: lookbackRange.to } } },
 			{
 				$group: {
-					_id: { day: COLOR_DOMAIN_SENTINEL_DAY, dimensionValue: `$${dimension}` },
+					_id: { day: COLOR_DOMAIN_SENTINEL_DAY, dimensionValue: `$${groupingFieldFor(dimension)}` },
 					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
 					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
 					eventCount: { $sum: 1 },
@@ -433,6 +451,7 @@ export async function dimensionValueDomain(db: Db, dimension: CostSplitDimension
 	let merged: DimensionRowWithRepoKey[];
 	if (dimension === CostSplitDimension.Model) merged = mergeByNormalizedDimension(dimensionRows);
 	else if (dimension === CostSplitDimension.Project) merged = mergeProjectRowsByRepoKey(dimensionRows);
+	else if (dimension === CostSplitDimension.Repo) merged = mergeRepoRows(dimensionRows);
 	else merged = dimensionRows;
 
 	return merged
@@ -509,6 +528,43 @@ function mergeProjectRowsByRepoKey(rows: DimensionRowWithRepoKey[]): DimensionRo
 			if (row.dimensionValue.length < existing.dimensionValue.length) existing.dimensionValue = row.dimensionValue;
 		} else {
 			merged.set(groupKey, { ...row });
+		}
+	}
+
+	return [...merged.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+/**
+ * Folds rows into one row per repository per day, labeled with the SHORTEST projectSlug in the
+ * group (D20's convention, since repoKey is opaque). Differs from `mergeProjectRowsByRepoKey` in
+ * one deliberate way: every row with NO repoKey collapses into a single explicitly-named bucket
+ * rather than standing alone. On the Project tab those are separate projects that happen to share
+ * a missing field; on this tab "no repository" is the answer itself, and today that is over half
+ * of all spend — splitting it across project names would hide how much is unattributed.
+ *
+ * @param rows - rows keyed by (day, projectSlug), each carrying its repoKey when resolved
+ */
+function mergeRepoRows(rows: DimensionRowWithRepoKey[]): DimensionRowWithRepoKey[] {
+	const merged = new Map<string, DimensionRowWithRepoKey>();
+
+	for (const row of rows) {
+		const groupKey = row.repoKey ? `${row.day} repo:${row.repoKey}` : `${row.day} repo:none`;
+		const existing = merged.get(groupKey);
+
+		if (existing) {
+			existing.costUsd += row.costUsd;
+			existing.unpricedEventCount += row.unpricedEventCount;
+			existing.eventCount += row.eventCount;
+			// Only a real repository picks a label from its slugs; the unattributed bucket keeps its
+			// own name however many projects land in it.
+			if (row.repoKey && row.dimensionValue.length < existing.dimensionValue.length) {
+				existing.dimensionValue = row.dimensionValue;
+			}
+		} else {
+			merged.set(groupKey, {
+				...row,
+				dimensionValue: row.repoKey ? row.dimensionValue : UNATTRIBUTED_DIMENSION_VALUE,
+			});
 		}
 	}
 

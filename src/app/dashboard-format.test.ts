@@ -405,3 +405,8 @@ test("summarizeMonthToDate reads an absent today as zero spend, not as missing d
 	expect(summary.todayCostUsd).toBe(0);
 	expect(summary.monthCostUsd).toBe(10);
 });
+
+test("the repo split is a recognised tab, and still nothing outside the allowlist is (D30)", () => {
+	expect(parseDashboardRange(new URLSearchParams("tab=repo"), NOW, EARLIEST, TZ).tab).toBe("repo");
+	expect(parseDashboardRange(new URLSearchParams("tab=repoKey"), NOW, EARLIEST, TZ).tab).toBe("machine");
+});

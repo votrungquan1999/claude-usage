@@ -38,6 +38,7 @@ export function CostSplits({ initialTab, fromMs, toMs, domainFromMs, domainToMs 
 						<TabsTrigger value={SplitTab.Machine}>Machine</TabsTrigger>
 						<TabsTrigger value={SplitTab.Project}>Project</TabsTrigger>
 						<TabsTrigger value={SplitTab.Model}>Model</TabsTrigger>
+						<TabsTrigger value={SplitTab.Repo}>Repo</TabsTrigger>
 					</TabsList>
 					<TabsContent value={SplitTab.Machine}>
 						<SplitPanel dimension={CostSplitDimension.Machine} dimensionLabel="Machine" {...viewWindow} />
@@ -47,6 +48,9 @@ export function CostSplits({ initialTab, fromMs, toMs, domainFromMs, domainToMs 
 					</TabsContent>
 					<TabsContent value={SplitTab.Model}>
 						<SplitPanel dimension={CostSplitDimension.Model} dimensionLabel="Model" {...viewWindow} />
+					</TabsContent>
+					<TabsContent value={SplitTab.Repo}>
+						<SplitPanel dimension={CostSplitDimension.Repo} dimensionLabel="Repository" {...viewWindow} />
 					</TabsContent>
 				</SplitTabs>
 			</CardContent>

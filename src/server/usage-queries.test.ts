@@ -503,3 +503,71 @@ test("dailyEfficiency reports a day's unpriced events, so a month total can be s
 	expect(day.unpricedEventCount).toBe(1);
 	expect(day.totalEventCount).toBe(2);
 });
+
+test("the repo split never renders the raw repoKey hash, which is a confirmable identifier and not an opaque token", async () => {
+	const range = dayRange("2026-09-20");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_repo_hash",
+			messageId: "msg_repo_hash",
+			timestamp: range.from,
+			projectSlug: "personal/lms",
+			repoKey: "00ae847a1b2c3d4e5f",
+			costUsd: 3,
+		}),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	expect(rows.some((row) => row.dimensionValue === "00ae847a1b2c3d4e5f")).toBe(false);
+	expect(rows).toContainEqual(expect.objectContaining({ dimensionValue: "personal/lms", costUsd: 3 }));
+});
+
+test("on the repo split, every project with no repository collapses into ONE named bucket — the opposite of the project split", async () => {
+	const range = dayRange("2026-09-21");
+	await saveUsageEvents(db, [
+		// Two unrelated projects, neither in a git repo, BOTH with a real slug — deliberately no
+		// null-slug row here. A null slug is already labelled "(unattributed)" before the merge
+		// runs, so including one would let this test pass even if the merge kept a project's name.
+		event({ requestId: "req_nr_a", messageId: "msg_nr_a", timestamp: range.from, projectSlug: "git-repos/personal", costUsd: 3 }),
+		event({ requestId: "req_nr_b", messageId: "msg_nr_b", timestamp: range.from, projectSlug: "git-repos/concrete_engine", costUsd: 5 }),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	// On the Project tab these stand alone; here "no repository" is the answer itself, and it is
+	// over half of all spend — splitting it across project names would hide that.
+	expect(rows).toEqual([expect.objectContaining({ dimensionValue: "(unattributed)", costUsd: 8, eventCount: 2 })]);
+});
+
+test("a row missing its project slug entirely joins the same unattributed repo bucket, not a second one", async () => {
+	const range = dayRange("2026-09-23");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_ns_a", messageId: "msg_ns_a", timestamp: range.from, projectSlug: "git-repos/personal", costUsd: 3 }),
+		event({ requestId: "req_ns_b", messageId: "msg_ns_b", timestamp: range.from, projectSlug: undefined, costUsd: 2 }),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	expect(rows).toEqual([expect.objectContaining({ dimensionValue: "(unattributed)", costUsd: 5, eventCount: 2 })]);
+});
+
+test("on the repo split, checkouts sharing a repoKey merge under the shortest project slug (D20)", async () => {
+	const range = dayRange("2026-09-22");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_rw_main", messageId: "msg_rw_main", timestamp: range.from, projectSlug: "personal/ccp", repoKey: "hash-rw", costUsd: 1 }),
+		event({
+			requestId: "req_rw_tree",
+			messageId: "msg_rw_tree",
+			timestamp: range.from,
+			projectSlug: "personal/ccp-TICKET-42",
+			repoKey: "hash-rw",
+			costUsd: 2,
+		}),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	expect(rows).toContainEqual(expect.objectContaining({ dimensionValue: "personal/ccp", costUsd: 3, eventCount: 2 }));
+	expect(rows.some((row) => row.dimensionValue === "personal/ccp-TICKET-42")).toBe(false);
+});
