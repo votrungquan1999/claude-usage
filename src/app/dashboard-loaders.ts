@@ -9,8 +9,10 @@ import {
 	costPerDay,
 	dailyEfficiency,
 	dailyEfficiencyByModel,
+	type SessionListPage,
 	dimensionValueDomain,
 	earliestEventTimestamp,
+	listSessions,
 } from "@/server/usage-queries";
 
 /**
@@ -87,5 +89,20 @@ export const loadDailyEfficiencyByModel = cache(
 	async (fromMs: number, toMs: number): Promise<DailyEfficiencyByModelRow[]> => {
 		const db = await getDatabase();
 		return dailyEfficiencyByModel(db, { from: new Date(fromMs), to: new Date(toMs) });
+	},
+);
+
+/**
+ * One page of the session list for a window.
+ *
+ * @param fromMs - window start, epoch milliseconds
+ * @param toMs - window end, epoch milliseconds
+ * @param pageIndex - zero-based page number
+ * @param pageSize - rows per page
+ */
+export const loadSessionPage = cache(
+	async (fromMs: number, toMs: number, pageIndex: number, pageSize: number): Promise<SessionListPage> => {
+		const db = await getDatabase();
+		return listSessions(db, { from: new Date(fromMs), to: new Date(toMs) }, pageIndex, pageSize);
 	},
 );

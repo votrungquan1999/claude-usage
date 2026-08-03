@@ -20,6 +20,7 @@ import { SubagentShareView } from "./efficiency/subagent-share-view";
 import { KpiCards } from "./kpi-cards/kpi-cards";
 import { RANGE_PRESET_LABELS, RangePresetOptions } from "./range-picker/range-picker";
 import { DEFAULT_RANGE_PRESET, type DashboardWindowView } from "./range-picker/range-picker.type";
+import { SessionList } from "./session-list/session-list";
 import { SessionLookupForm } from "./session-lookup-form";
 import { SignOutButton } from "./sign-out-button";
 
@@ -145,7 +146,20 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 
 				<Card>
 					<CardHeader>
-						<CardTitle>Open a session</CardTitle>
+						<CardTitle>Sessions in this range</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<CardErrorBoundary fallback={<CardErrorNotice>This card could not be loaded</CardErrorNotice>}>
+							<Suspense fallback={<CardPlaceholder />}>
+								<SessionList fromMs={fromMs} toMs={toMs} pageIndex={view.pageIndex} />
+							</Suspense>
+						</CardErrorBoundary>
+					</CardContent>
+				</Card>
+
+				<Card>
+					<CardHeader>
+						<CardTitle>Open a session by id</CardTitle>
 					</CardHeader>
 					<CardContent>
 						<SessionLookupForm />

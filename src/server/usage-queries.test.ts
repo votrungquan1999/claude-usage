@@ -11,6 +11,7 @@ import {
 	dimensionValueDomain,
 	earliestEventTimestamp,
 	getSessionBreakdown,
+	listSessions,
 	type DateRange,
 } from "./usage-queries";
 
@@ -677,4 +678,75 @@ test("raw model variants that normalize to the same model merge into one row, so
 	expect(rows).toHaveLength(1);
 	expect(rows[0].model).toBe("claude-opus-5");
 	expect(rows[0].grossSavedUsd).toBeCloseTo(9, 6);
+});
+
+test("listSessions ranks a window's sessions by what they cost in it, breaking ties by session id (D38)", async () => {
+	const range = dayRange("2026-11-02");
+	await saveUsageEvents(db, [
+		// Inserted in reverse id order so the assertion below is about the SORT, not about insertion.
+		// Honest limitation: this engine's $group happens to emit a deterministic order, so removing
+		// the `_id: 1` tie-break does not fail here — verified by injecting exactly that. The
+		// tie-break stays because that determinism is not guaranteed on a real deployment, and once
+		// $skip paginates, an unstable tie puts a session on two pages or on none (D38).
+		event({ requestId: "req_sl_c", messageId: "msg_sl_c", sessionId: "sess-c", timestamp: range.from, costUsd: 5 }),
+		event({ requestId: "req_sl_a", messageId: "msg_sl_a", sessionId: "sess-b", timestamp: range.from, costUsd: 5 }),
+		event({ requestId: "req_sl_b", messageId: "msg_sl_b", sessionId: "sess-a", timestamp: range.from, costUsd: 9 }),
+	]);
+
+	const page = await listSessions(db, range, 0, 25);
+
+	expect(page.rows.map((row) => row.sessionId)).toEqual(["sess-a", "sess-b", "sess-c"]);
+	expect(page.totalCount).toBe(3);
+});
+
+test("a session straddling the window's edge shows its in-window slice AND its full total (D32)", async () => {
+	// ~5-15 sessions start per day, so a session that began before the window is routine, not
+	// exotic. The in-window figure is what sorts, keeping the list consistent with the chart above.
+	const range = dayRange("2026-11-05");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_st_before", messageId: "msg_st_before", sessionId: "sess-straddle", timestamp: new Date("2026-11-04T10:00:00.000Z"), costUsd: 7 }),
+		event({ requestId: "req_st_inside", messageId: "msg_st_inside", sessionId: "sess-straddle", timestamp: range.from, costUsd: 3 }),
+	]);
+
+	const page = await listSessions(db, range, 0, 25);
+	const row = page.rows.find((candidate) => candidate.sessionId === "sess-straddle");
+
+	expect(row?.costUsd).toBe(3);
+	expect(row?.totalCostUsd).toBe(10);
+});
+
+test("listSessions pages through a window without dropping or repeating a session (D34)", async () => {
+	const range = dayRange("2026-11-08");
+	await saveUsageEvents(
+		db,
+		[1, 2, 3, 4, 5].map((n) =>
+			event({
+				requestId: `req_pg_${n}`,
+				messageId: `msg_pg_${n}`,
+				sessionId: `sess-pg-${n}`,
+				timestamp: range.from,
+				costUsd: n,
+			}),
+		),
+	);
+
+	const first = await listSessions(db, range, 0, 2);
+	const second = await listSessions(db, range, 1, 2);
+
+	expect(first.rows.map((row) => row.sessionId)).toEqual(["sess-pg-5", "sess-pg-4"]);
+	expect(second.rows.map((row) => row.sessionId)).toEqual(["sess-pg-3", "sess-pg-2"]);
+	// The count describes the whole window, not the page — the pager needs it to know how far to go.
+	expect(first.totalCount).toBe(5);
+});
+
+test("listSessions reports normalized model names, not the raw dated ids stored on the events", async () => {
+	const range = dayRange("2026-11-11");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_mn_a", messageId: "msg_mn_a", sessionId: "sess-models", timestamp: range.from, model: "claude-opus-5" }),
+		event({ requestId: "req_mn_b", messageId: "msg_mn_b", sessionId: "sess-models", timestamp: range.from, model: "claude-opus-5[1m]" }),
+	]);
+
+	const page = await listSessions(db, range, 0, 25);
+
+	expect(page.rows.find((row) => row.sessionId === "sess-models")?.models).toEqual(["claude-opus-5"]);
 });

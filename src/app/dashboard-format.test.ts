@@ -494,3 +494,12 @@ test("a day with events but no priced spend has no defined mix, so it breaks rat
 	expect(rows[0]["claude-opus-5"]).toBeNull();
 	expect(rows[0].totalEventCount).toBe(4);
 });
+
+test("a session-list page is read from the URL, and anything that is not a page number reads as the first", () => {
+	expect(parseDashboardRange(new URLSearchParams("page=3"), NOW, EARLIEST, TZ).pageIndex).toBe(2);
+	expect(parseDashboardRange(new URLSearchParams(), NOW, EARLIEST, TZ).pageIndex).toBe(0);
+	// A negative, a zero, a fraction and a word are all positions that do not exist.
+	for (const bad of ["0", "-4", "1.5", "last"]) {
+		expect(parseDashboardRange(new URLSearchParams(`page=${bad}`), NOW, EARLIEST, TZ).pageIndex).toBe(0);
+	}
+});

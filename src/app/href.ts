@@ -8,6 +8,8 @@ import { DEFAULT_RANGE_PRESET, RangePreset } from "./range-picker/range-picker.t
  *
  * - `preset` — one of `RangePreset`; omitted when it equals `DEFAULT_RANGE_PRESET`.
  * - `tab` — one of `SplitTab`; omitted when it equals `DEFAULT_SPLIT_TAB`.
+ * - `page` — 1-based session-list page; omitted on page 1, and CLEARED by any window change,
+ *   since page 7 of the old window is meaningless in the new one (D34).
  * - `from` / `to` — `YYYY-MM-DD` local days in `DASHBOARD_TIMEZONE`, for an explicit custom range.
  *   When both are present they WIN over `preset`, which is then dropped from the link (D37).
  *   Introduced with the calendar; nothing reads them yet.
@@ -18,6 +20,9 @@ export const RANGE_PRESET_PARAM = "preset";
 
 /** See `RANGE_PRESET_PARAM` for the full schema. */
 export const SPLIT_TAB_PARAM = "tab";
+
+/** See `RANGE_PRESET_PARAM` for the full schema. */
+export const SESSION_PAGE_PARAM = "page";
 
 /** See `RANGE_PRESET_PARAM` for the full schema. */
 export const RANGE_FROM_PARAM = "from";
@@ -33,6 +38,8 @@ export interface DashboardHrefChanges {
 	tab?: SplitTab;
 	/** An explicit window, as `YYYY-MM-DD` local days in `DASHBOARD_TIMEZONE`. */
 	customRange?: DashboardCustomRange;
+	/** 1-based session-list page. */
+	page?: number;
 }
 
 /** The two ends of an explicitly picked window. */
@@ -65,6 +72,10 @@ export function dashboardHref(current: URLSearchParams, changes: DashboardHrefCh
 		next.set(RANGE_TO_PARAM, changes.customRange.toDay);
 		next.delete(RANGE_PRESET_PARAM);
 	}
+	// Any window change invalidates the page number: page 7 of the last 90 days is not page 7 of
+	// today, and landing on an empty page reads as "no sessions" (D34).
+	if (changes.preset !== undefined || changes.customRange !== undefined) next.delete(SESSION_PAGE_PARAM);
+	if (changes.page !== undefined) setOrClearDefault(next, SESSION_PAGE_PARAM, String(changes.page), String(FIRST_PAGE));
 	if (changes.tab !== undefined) setOrClearDefault(next, SPLIT_TAB_PARAM, changes.tab, DEFAULT_SPLIT_TAB);
 
 	const query = next.toString();
@@ -84,6 +95,9 @@ function setOrClearDefault(params: URLSearchParams, key: string, value: string, 
 	if (value === defaultValue) params.delete(key);
 	else params.set(key, value);
 }
+
+/** Pages are 1-based in the URL and omitted at the first one, so a default view has a clean link. */
+export const FIRST_PAGE = 1;
 
 /** The dashboard lives at the root; links are absolute so `router.replace` never resolves them
  * against whatever path the operator happens to be on. */

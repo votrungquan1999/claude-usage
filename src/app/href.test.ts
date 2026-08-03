@@ -40,3 +40,14 @@ test("going back to a preset clears the explicit dates, so the preset click actu
 
 	expect(href).toBe("/?preset=7d");
 });
+
+test("changing the window clears the session-list page, so nobody lands on an empty page 7 (D34)", () => {
+	const href = dashboardHref(new URLSearchParams("preset=90d&page=7"), { preset: RangePreset.Today });
+
+	expect(href).toBe("/?preset=today");
+});
+
+test("a session-list page is carried in the link, and page 1 is left out of it", () => {
+	expect(dashboardHref(new URLSearchParams(), { page: 3 })).toBe("/?page=3");
+	expect(dashboardHref(new URLSearchParams("page=3"), { page: 1 })).toBe("/");
+});

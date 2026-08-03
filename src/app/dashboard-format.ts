@@ -6,7 +6,14 @@ import type {
 } from "@/server/usage-queries";
 
 import { DEFAULT_SPLIT_TAB, SplitTab } from "./cost-split-view/cost-split-view.type";
-import { RANGE_FROM_PARAM, RANGE_PRESET_PARAM, RANGE_TO_PARAM, SPLIT_TAB_PARAM } from "./href";
+import {
+	FIRST_PAGE,
+	RANGE_FROM_PARAM,
+	RANGE_PRESET_PARAM,
+	RANGE_TO_PARAM,
+	SESSION_PAGE_PARAM,
+	SPLIT_TAB_PARAM,
+} from "./href";
 import {
 	DEFAULT_RANGE_PRESET,
 	PRESET_DAY_SPANS,
@@ -338,6 +345,9 @@ export interface DashboardView {
 	preset: RangePreset;
 	range: DateRange;
 	tab: SplitTab;
+	/** Zero-based session-list page. Anything unusable in the URL reads as the first page — a
+	 * page number is a position, and there is only one sensible position to fall back to. */
+	pageIndex: number;
 	/** D37 — true when a supplied RANGE parameter was unusable and the window fell back to the
 	 * default, so the page can say so. A rejected `tab` does not set this: it changes which split is
 	 * shown, not which period, and silently defaulting it is the D30 allowlist working as intended. */
@@ -363,6 +373,7 @@ export function parseDashboardRange(
 	timeZone: string,
 ): DashboardView {
 	const tab = parseSplitTab(params.get(SPLIT_TAB_PARAM));
+	const pageIndex = parsePageIndex(params.get(SESSION_PAGE_PARAM));
 	const earliestDayStart = earliestEvent === null ? null : startOfDayInTimezone(earliestEvent, timeZone);
 
 	// An explicit pair wins over any preset also in the URL (D37) — a stale preset left over from
@@ -373,6 +384,7 @@ export function parseDashboardRange(
 			preset: RangePreset.Custom,
 			range: clampWindow(custom.range, earliestDayStart, now),
 			tab,
+			pageIndex,
 			fellBack: false,
 		};
 	}
@@ -393,7 +405,20 @@ export function parseDashboardRange(
 			? earliestDayStart
 			: startOfDayInTimezone(new Date(now.getTime() - (PRESET_DAY_SPANS[preset] - 1) * DAY_MS), timeZone);
 
-	return { preset, range: clampWindow({ from: spanStart, to: now }, earliestDayStart, now), tab, fellBack };
+	return { preset, range: clampWindow({ from: spanStart, to: now }, earliestDayStart, now), tab, pageIndex, fellBack };
+}
+
+/**
+ * A `?page=` value as a zero-based index. Anything not a whole page number at or above the first
+ * one reads as the first page.
+ *
+ * @param raw - the raw parameter value, or `null` when the key is absent
+ */
+function parsePageIndex(raw: string | null): number {
+	if (raw === null) return 0;
+	const page = Number(raw);
+	if (!Number.isInteger(page) || page < FIRST_PAGE) return 0;
+	return page - FIRST_PAGE;
 }
 
 /**

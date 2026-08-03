@@ -251,6 +251,157 @@ function mergeEfficiencyByDayAndModel(rows: DailyEfficiencyByModelRow[]): DailyE
 	return [...merged.values()].sort((a, b) => a.day.localeCompare(b.day) || a.model.localeCompare(b.model));
 }
 
+/** One session as it appears in the browsable list. */
+export interface SessionListRow {
+	sessionId: string;
+	projectSlug: string;
+	machineId: string;
+	startedAt: Date;
+	endedAt: Date;
+	/** Cost WITHIN the selected window — what the list sorts by, so it agrees with the chart above
+	 * it (D32). */
+	costUsd: number;
+	unpricedEventCount: number;
+	eventCount: number;
+	/** Normalized model names, so this is not the one surface in the app showing dated model ids. */
+	models: string[];
+	/** The session's cost across all time. Differs from `costUsd` only when the session straddles
+	 * the window's edge, which happens routinely — showing it removes the surprise on click-through. */
+	totalCostUsd: number;
+	totalUnpricedEventCount: number;
+}
+
+/** One page of the session list, plus what the pager needs to know. */
+export interface SessionListPage {
+	rows: SessionListRow[];
+	/** Sessions in the whole window, not just this page. */
+	totalCount: number;
+}
+
+/**
+ * One page of sessions that ran in the window, most expensive first (D9/D34).
+ *
+ * @param db - the connected database
+ * @param range - required bound so the query hits `by_time`
+ * @param pageIndex - zero-based page number
+ * @param pageSize - rows per page
+ */
+export async function listSessions(
+	db: Db,
+	range: DateRange,
+	pageIndex: number,
+	pageSize: number,
+): Promise<SessionListPage> {
+	const [facet] = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.aggregate<SessionListFacet>([
+			{ $match: { timestamp: { $gte: range.from, $lte: range.to } } },
+			{
+				$group: {
+					_id: "$sessionId",
+					projectSlug: { $first: "$projectSlug" },
+					machineId: { $first: "$machineId" },
+					startedAt: { $min: "$timestamp" },
+					endedAt: { $max: "$timestamp" },
+					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
+					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
+					eventCount: { $sum: 1 },
+					models: { $addToSet: "$model" },
+				},
+			},
+			{
+				$facet: {
+					// D38 — session id breaks the tie. Sorting on cost alone lets a tied session
+					// appear on two pages or on none once $skip enters the picture.
+					page: [{ $sort: { costUsd: -1, _id: 1 } }, { $skip: pageIndex * pageSize }, { $limit: pageSize }],
+					total: [{ $count: "count" }],
+				},
+			},
+		])
+		.toArray();
+
+	const rows = facet?.page ?? [];
+	// Only the sessions on THIS page, so the second lookup stays bounded no matter how wide the
+	// window is. It reads `by_session`, which the range-bounded query above cannot use.
+	const lifetime = await sessionLifetimeTotals(
+		db,
+		rows.map((row) => row._id),
+	);
+
+	return {
+		rows: rows.map((row) => ({
+			sessionId: row._id,
+			projectSlug: row.projectSlug ?? UNATTRIBUTED_DIMENSION_VALUE,
+			machineId: row.machineId ?? UNATTRIBUTED_DIMENSION_VALUE,
+			startedAt: row.startedAt,
+			endedAt: row.endedAt,
+			costUsd: row.costUsd,
+			unpricedEventCount: row.unpricedEventCount,
+			eventCount: row.eventCount,
+			// $addToSet returns the RAW stored strings; normalizing keeps this from being the one
+			// surface in the app that shows dated model ids.
+			models: [...new Set(row.models.map(normalizeModel))].sort(),
+			totalCostUsd: lifetime.get(row._id)?.costUsd ?? row.costUsd,
+			totalUnpricedEventCount: lifetime.get(row._id)?.unpricedEventCount ?? row.unpricedEventCount,
+		})),
+		totalCount: facet?.total[0]?.count ?? 0,
+	};
+}
+
+/** Shape of one grouped session before the lifetime lookup is folded in. */
+interface RawSessionListRow {
+	_id: string;
+	projectSlug?: string;
+	machineId?: string;
+	startedAt: Date;
+	endedAt: Date;
+	costUsd: number;
+	unpricedEventCount: number;
+	eventCount: number;
+	models: string[];
+}
+
+/** The `$facet` stage's combined result shape. */
+interface SessionListFacet {
+	page: RawSessionListRow[];
+	total: { count: number }[];
+}
+
+/** A session's cost across all time, regardless of the selected window. */
+interface SessionLifetimeTotal {
+	costUsd: number;
+	unpricedEventCount: number;
+}
+
+/**
+ * All-time totals for a handful of sessions (D32) — what a row shows alongside its in-window
+ * slice, so clicking through to a session that started before the window does not surprise.
+ * Deliberately unbounded in time and bounded by session id instead: it reads `by_session`, and
+ * the caller only ever passes one page's worth.
+ *
+ * @param db - the connected database
+ * @param sessionIds - the sessions on the current page
+ */
+async function sessionLifetimeTotals(db: Db, sessionIds: string[]): Promise<Map<string, SessionLifetimeTotal>> {
+	if (sessionIds.length === 0) return new Map();
+
+	const rows = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.aggregate<{ _id: string; costUsd: number; unpricedEventCount: number }>([
+			{ $match: { sessionId: { $in: sessionIds } } },
+			{
+				$group: {
+					_id: "$sessionId",
+					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
+					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
+				},
+			},
+		])
+		.toArray();
+
+	return new Map(rows.map((row) => [row._id, { costUsd: row.costUsd, unpricedEventCount: row.unpricedEventCount }]));
+}
+
 /** One model's contribution to a session's total, sorted by cost descending. */
 export interface SessionModelBreakdownRow {
 	model: string;
