@@ -4,7 +4,7 @@ import { Bar, BarChart, CartesianGrid, ReferenceLine, XAxis, YAxis } from "recha
 
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 
-import type { DailySavingsRow } from "../dashboard-format";
+import { bucketAxisTick, type DailySavingsRow } from "../dashboard-format";
 
 export interface CacheSavingsChartProps {
 	rows: DailySavingsRow[];
@@ -30,7 +30,7 @@ export function CacheSavingsChart({ rows }: CacheSavingsChartProps): React.JSX.E
 		<ChartContainer config={config} className="aspect-auto h-64 w-full">
 			<BarChart data={data}>
 				<CartesianGrid vertical={false} />
-				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} />
+				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tickFormatter={bucketAxisTick} />
 				<YAxis tickLine={false} axisLine={false} width={64} tickFormatter={(value: number) => signedUsd(value)} />
 				{/* Without this a negative day just looks like a short bar. */}
 				<ReferenceLine y={0} stroke="var(--border)" />

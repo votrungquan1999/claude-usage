@@ -5,8 +5,9 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { recordAccount } from "../src/parser/account-ledger.mjs";
+import { attributeTurns } from "../src/parser/attribution.mjs";
 import { dedupeAssistantTurns } from "../src/parser/dedupe.mjs";
-import { mapTurnToEvent } from "../src/parser/events.mjs";
+import { mapTurnToEvent, resolveSessionTitle } from "../src/parser/events.mjs";
 import { resolveProjectSlug } from "../src/parser/project.mjs";
 import { readTailRecords, streamRecords } from "../src/parser/read.mjs";
 import { resolveRepoKey } from "../src/parser/repo.mjs";
@@ -18,9 +19,11 @@ import { resolveRepoKey } from "../src/parser/repo.mjs";
  * upload never adds latency to a prompt; `hooks/session-start.mjs` imports `syncTail` and
  * awaits it inline (Step 13), so a session starts already caught up.
  *
- * Aggregates-only: this file must never hold a raw transcript record in scope past the
- * point `dedupeAssistantTurns`/`mapTurnToEvent` have narrowed it — only `MappedUsageEvent`
- * objects are ever serialised into a request body.
+ * Aggregates-only, with ONE deliberate exception: raw records are held just long enough to pull
+ * the session title out of them, and nothing but that string survives. Otherwise this file must
+ * never hold a raw transcript record in scope past the point `dedupeAssistantTurns` /
+ * `mapTurnToEvent` have narrowed it — only `MappedUsageEvent` objects are ever serialised into a
+ * request body, and `lastPrompt` (raw prompt text, in the same records) is never among them.
  *
  * Never throws: every failure mode (no network, non-2xx, missing config, missing/unreadable
  * files) degrades to a no-op. There is no persisted watermark, so the next firing re-derives
@@ -75,14 +78,24 @@ function readTranscriptRecords(path, full) {
 
 async function syncOnce({ transcriptPath, home, apiUrl, secret, full }) {
 	try {
-		const mainTurns = dedupeAssistantTurns(readTranscriptRecords(transcriptPath, full));
+		// Read once and keep the raw records: the session title lives in its own `ai-title` record,
+		// which dedupeAssistantTurns filters out along with everything that is not an assistant turn.
+		const mainRecords = readTranscriptRecords(transcriptPath, full);
+		const mainTurns = dedupeAssistantTurns(mainRecords);
+		// May be undefined on a tail read that did not reach back far enough to include it — the
+		// mapper then omits the field, leaving any title an earlier sync recorded in place.
+		const sessionTitle = resolveSessionTitle(mainRecords);
 
 		// Subagent transcripts sit under the session directory and are never passed to a hook
 		// directly (Claude Code only ever hands hooks the main transcript's path) — without this,
 		// subagent spend reaches the store only via a manual `bin/backfill.mjs` run (R22/R31).
-		const subagentTurns = listSubagentTranscripts(transcriptPath).flatMap((path) =>
+		// Kept as one group per transcript rather than flattened: repo attribution carries forward
+		// through a chronological stream, and a subagent's turns are their own stream, not a
+		// continuation of the main one.
+		const subagentGroups = listSubagentTranscripts(transcriptPath).map((path) =>
 			dedupeAssistantTurns(readTranscriptRecords(path, full)),
 		);
+		const subagentTurns = subagentGroups.flat();
 
 		const turns = [...mainTurns, ...subagentTurns];
 		if (turns.length === 0) return { sent: 0 };
@@ -96,15 +109,21 @@ async function syncOnce({ transcriptPath, home, apiUrl, secret, full }) {
 		if (!machineId) return { sent: 0 };
 
 		// Same per-directory resolution as projectSlug (D20) — optional: undefined when the
-		// recorded cwd isn't a git repo, or no longer exists.
+		// recorded cwd isn't a git repo, or no longer exists. Only a FALLBACK now: each turn is
+		// attributed on its own evidence, and this is what a turn offering none lands on.
 		const repoKey = resolveRepoKey(dirname(transcriptPath));
+		const fallback = { projectSlug, ...(repoKey !== undefined && { repoKey }) };
 
 		const ledgerPath = join(home, ".claude", "claude-usage-state", "accounts.json");
 		const accountLedger = updateLedgerWithLiveAccount(ledgerPath, readLedger(ledgerPath), home, sessionId);
 
-		const events = turns
-			.map((turn) => mapTurnToEvent(turn, { projectSlug, machineId, repoKey, accountLedger }))
-			.filter((event) => event !== null);
+		const toEvents = (group) => {
+			const attributions = attributeTurns(group, fallback);
+			return group
+				.map((turn, index) => mapTurnToEvent(turn, { ...attributions[index], machineId, accountLedger, sessionTitle }))
+				.filter((event) => event !== null);
+		};
+		const events = [toEvents(mainTurns), ...subagentGroups.map(toEvents)].flat();
 		if (events.length === 0) return { sent: 0 };
 
 		// Batched: a full sweep of a large session can produce far more events than the tail

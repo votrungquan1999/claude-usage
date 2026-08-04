@@ -64,7 +64,9 @@ So a local day can straddle a price change — and `claude-sonnet-5` changes pri
 
 `repoKey` is an unsalted SHA-256 over a normalised git remote — dictionary-confirmable, so an identifier rather than an opaque token. Every other split interpolates its own field as the row label; `Repo` reads `projectSlug` instead (`groupingFieldFor`) and labels each repository with the shortest slug that maps to it.
 
-The repo split also **inverts** the project split's rule for repo-less rows. On the Project tab each stands alone, so an unrelated project is never folded in just because both lack the field. On the Repo tab they all collapse into one `(unattributed)` bucket: "no repository" is the answer itself there, and it is currently 54.8% of all spend — spreading it across project names would hide exactly that.
+The repo split also **inverts** the project split's rule for repo-less rows. On the Project tab each stands alone, so an unrelated project is never folded in just because both lack the field. On the Repo tab they all collapse into one `(unattributed)` bucket: "no repository" is the answer itself there, and spreading it across project names would hide exactly that.
+
+That bucket was 54.8% of all spend, and the two tabs were consequently identical in every other respect — verified by running both grouping rules over the real corpus, which produced byte-identical output once the collapse was removed. Per-turn attribution (see the sync spec) changed both facts: the bucket is now a genuine ~7% residue of work outside any repository, and the tabs genuinely differ, because four worktree directories now resolve to their main repository's key and merge on this tab while standing alone on the Project tab.
 
 ### Pricing arithmetic stays server-side
 
@@ -90,6 +92,20 @@ The projection divides by days that have **fully ended**, which is zero on the 1
 
 The proxy carries `pathname + search` as `?next=`, stripping Next's `_rsc` cache-buster. That value is attacker-controllable and reflected into a navigation, so it is validated **on the server** before the login form sees it — and the check is stricter than "starts with a slash", which accepts `//evil.com` (protocol-relative) and `/\evil.com` (backslash normalised to a slash).
 
+### Every per-day chart caps at 20 bars
+
+`planDayBuckets` folds a window's calendar days into at most 20 buckets — one rule for every window, not a special case for the long ones. 30 days becomes 15 two-day buckets, 90 becomes 18 five-day ones. At 20 days or fewer each bucket is a single day carrying a bare `YYYY-MM-DD` label, byte-identical to what the charts rendered before bucketing existed.
+
+Two consequences accepted when this was chosen over capping at 31 (which would have kept a calendar month daily): the **default 30-day view visibly changed**, and a one-day spike now merges into its neighbour on the window where that spike matters most.
+
+Applies to **all four** per-day charts — cost split, model mix, cache savings, subagent share. They sit on one dashboard over one window, so leaving two at 90 bars while the others show 18 would read as a bug.
+
+**A bucket sums the underlying quantities and recomputes every ratio from those sums.** Model mix is a share of spend and subagent share is a ratio of costs; combining the daily *percentages* would be wrong in a way that looks entirely plausible on screen. This is structural rather than a rule to remember: `relabelRowsToBuckets` rewrites each row's `day` to its bucket label **before** the roll-up each view already ran, and every roll-up in the codebase (`pivotForChart`, `modelMixByDay`, `rollUpDailySavings`, `rollUpEfficiencyByDay`) groups by `day` and sums. The averaged-percentage version cannot be expressed.
+
+Leftover days land on the **oldest** bucket, never the newest. The eye reads the right edge as "now", so a short final bar looks like spending collapsed when it only means the bucket is young.
+
+A multi-day bucket labels itself `first…last`, which is what the tooltip shows; the axis tick keeps only the first day, because 20 full range labels collide into exactly the mess bucketing exists to remove.
+
 ## Things a test cannot tell you here
 
 There is no DOM harness. `vitest` runs node-only, and adding jsdom would produce **false greens** for anything layout-dependent — `getBoundingClientRect` returns zeros, so a tick "survives" in the test while the browser deletes it. Every rendering claim below is unverified and needs a human to look:
@@ -97,9 +113,9 @@ There is no DOM harness. `vitest` runs node-only, and adding jsdom would produce
 - The five series colours are distinguishable, and each totals-table swatch matches its bar.
 - The two-month calendar is not clipped by the popover, and its disabled days match `[first recorded day, today]`.
 - The page dims and holds during a window change, rather than repainting card by card.
-- **Open:** today's bar is not marked partial on the chart (only the KPI tile says so).
-- **Open:** at 90-day and all-time windows the X axis is crowded; no bucketing or tick strategy was built.
-- **Open:** a fully-unpriced day and a gap-filled empty day both draw a zero-height bar. They are distinguishable in the data (`eventCount`) and the range-level statement fires, but not by looking at one bar.
+- **Reviewed, accepted:** today's bar is not marked partial on the chart. The KPI tile saying so is deemed enough. Closed deliberately, not still unexamined.
+- **Reviewed, accepted:** a fully-unpriced day and a gap-filled empty day both draw a zero-height bar. They stay distinguishable in the data (`eventCount`) and the range-level statement still fires; the visual ambiguity is tolerated.
+- **Fixed** — see *Every per-day chart caps at 20 bars* below. The X axis was crowded at 90-day and all-time windows; consecutive days now fold into buckets.
 
 ## Where the reasoning lives
 

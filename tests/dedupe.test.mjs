@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { dedupeAssistantTurns } from "../src/parser/dedupe.mjs";
 
@@ -32,6 +31,33 @@ test("collapses streaming copies of one message to the MAX output_tokens", () =>
 
 	const turns = dedupeAssistantTurns(records);
 
-	assert.equal(turns.length, 1, "three copies of one message must collapse to one turn");
-	assert.equal(turns[0].usage.output_tokens, 1505);
+	expect(turns, "three copies of one message must collapse to one turn").toHaveLength(1);
+	expect(turns[0].usage.output_tokens).toBe(1505);
+});
+
+test("a turn carries the directory it ran in and the files its tool calls touched", () => {
+	// Both are what attributes a turn to a repository when the session was launched from a parent
+	// directory holding many of them — cwd alone answers nothing there.
+	const record = {
+		type: "assistant",
+		requestId: "req_a",
+		cwd: "/repos/alpha",
+		timestamp: "2026-08-01T10:00:00.000Z",
+		message: {
+			id: "msg_1",
+			model: "claude-opus-5",
+			usage: { input_tokens: 2, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 9 },
+			content: [
+				{ type: "text", text: "editing" },
+				{ type: "tool_use", name: "Edit", input: { file_path: "/repos/alpha/src/a.ts" } },
+				{ type: "tool_use", name: "Read", input: { file_path: "/repos/beta/src/b.ts" } },
+				{ type: "tool_use", name: "Bash", input: { command: "ls" } },
+			],
+		},
+	};
+
+	const [turn] = dedupeAssistantTurns([record]);
+
+	expect(turn.cwd).toBe("/repos/alpha");
+	expect(turn.filePaths).toStrictEqual(["/repos/alpha/src/a.ts", "/repos/beta/src/b.ts"]);
 });

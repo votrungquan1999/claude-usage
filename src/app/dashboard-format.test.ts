@@ -5,7 +5,7 @@ import {
 	colorDomainWindow,
 	dayKeyInTimezone,
 	endOfDayInTimezone,
-	fillMissingDays,
+	fillMissingBuckets,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
 	formatSavingsStatement,
@@ -15,6 +15,8 @@ import {
 	rollUpDailySavings,
 	parseDashboardRange,
 	pivotForChart,
+	planDayBuckets,
+	relabelRowsToBuckets,
 	rankDimensionTotals,
 	startOfDayInTimezone,
 	startOfMonthInTimezone,
@@ -121,13 +123,13 @@ test("assignSeriesColorSlots gives a shown value ranked beyond the palette size 
 	expect(colors.overflow).toBe("var(--chart-2)");
 });
 
-test("fillMissingDays inserts an absent day between two present days without altering them (D11/D24)", () => {
+test("fillMissingBuckets inserts an absent day between two present days without altering them (D11/D24)", () => {
 	const rows = [
 		{ day: "2026-06-01", value: 1 },
 		{ day: "2026-06-03", value: 3 },
 	];
 
-	const filled = fillMissingDays(rows, "2026-06-01", "2026-06-03", (day) => ({ day, value: 0 }));
+	const filled = fillMissingBuckets(rows, planDayBuckets("2026-06-01", "2026-06-03"), (day) => ({ day, value: 0 }));
 
 	expect(filled).toEqual([
 		{ day: "2026-06-01", value: 1 },
@@ -154,10 +156,10 @@ test("pivotForChart carries a day's event count so a gap-filled day stays distin
 	expect(rows[0].eventCount).toBe(7);
 });
 
-test("fillMissingDays never overwrites a real day, so a lower-bound warning survives the fill (D24)", () => {
+test("fillMissingBuckets never overwrites a real day, so a lower-bound warning survives the fill (D24)", () => {
 	const rows = [{ day: "2026-06-02", unpricedEventCount: 7, costUsd: 12.5 }];
 
-	const filled = fillMissingDays(rows, "2026-06-01", "2026-06-03", (day) => ({
+	const filled = fillMissingBuckets(rows, planDayBuckets("2026-06-01", "2026-06-03"), (day) => ({
 		day,
 		unpricedEventCount: 0,
 		costUsd: 0,
@@ -509,4 +511,64 @@ test("the session sort is read from the URL, and an unoffered ordering falls bac
 	// The value chooses which field an aggregation sorts by, so it is an allowlist, not a hint.
 	expect(parseDashboardRange(new URLSearchParams("sort=costUsd"), NOW, EARLIEST, TZ).sessionSort).toBe("cost");
 	expect(parseDashboardRange(new URLSearchParams(), NOW, EARLIEST, TZ).sessionSort).toBe("cost");
+});
+
+test("planDayBuckets folds a 30-day window into 15 two-day buckets (D7)", () => {
+	const buckets = planDayBuckets("2026-07-06", "2026-08-04");
+
+	expect(buckets.labels).toHaveLength(15);
+	expect(buckets.labels[0]).toBe("2026-07-06…2026-07-07");
+	expect(buckets.labels[14]).toBe("2026-08-03…2026-08-04");
+	expect(buckets.labelOf.get("2026-07-09")).toBe("2026-07-08…2026-07-09");
+});
+
+test("planDayBuckets puts a window's leftover days on the OLDEST bucket, so the newest bar is never short (D7)", () => {
+	// 21 days at a 2-day span leaves one over. On the right edge that short bar would read as
+	// spending collapsing; on the left it reads as the window starting mid-bucket, which it did.
+	const buckets = planDayBuckets("2026-07-15", "2026-08-04");
+
+	expect(buckets.labels).toHaveLength(11);
+	expect(buckets.labels[0]).toBe("2026-07-15");
+	expect(buckets.labels[10]).toBe("2026-08-03…2026-08-04");
+});
+
+test("planDayBuckets leaves a window of 20 days or fewer at one bare-dated bucket per day", () => {
+	// The bare date matters as much as the count: every existing per-day assertion, tooltip and
+	// axis tick keeps reading exactly what it did before bucketing existed.
+	const buckets = planDayBuckets("2026-08-01", "2026-08-20");
+
+	expect(buckets.labels).toHaveLength(20);
+	expect(buckets.labels[0]).toBe("2026-08-01");
+	expect(buckets.labels[19]).toBe("2026-08-20");
+});
+
+test("fillMissingBuckets gives a bucket with no recorded work its own placeholder, so it holds its place on the axis (D24)", () => {
+	const buckets = planDayBuckets("2026-07-06", "2026-08-04");
+	const rows = [{ day: "2026-08-03…2026-08-04", value: 9 }];
+
+	const filled = fillMissingBuckets(rows, buckets, (day) => ({ day, value: 0 }));
+
+	expect(filled).toHaveLength(15);
+	expect(filled[0]).toStrictEqual({ day: "2026-07-06…2026-07-07", value: 0 });
+	expect(filled[14]).toStrictEqual({ day: "2026-08-03…2026-08-04", value: 9 });
+});
+
+test("a bucket's model mix is the share of its SUMMED cost, never the average of its days' percentages (D7)", () => {
+	// Day one spends 90% of $10 on opus; day two spends 10% of $100. Averaging the two percentages
+	// gives a plausible-looking 50% — the bucket actually put $19 of $110 into opus.
+	const rows = relabelRowsToBuckets(
+		[
+			savingsModelRow({ day: "2026-07-06", model: "claude-opus-5", totalCostUsd: 9 }),
+			savingsModelRow({ day: "2026-07-06", model: "claude-haiku-4-5", totalCostUsd: 1 }),
+			savingsModelRow({ day: "2026-07-07", model: "claude-opus-5", totalCostUsd: 10 }),
+			savingsModelRow({ day: "2026-07-07", model: "claude-haiku-4-5", totalCostUsd: 90 }),
+		],
+		planDayBuckets("2026-07-06", "2026-08-04"),
+	);
+
+	const mix = modelMixByDay(rows, ["claude-opus-5", "claude-haiku-4-5"]);
+
+	expect(mix).toHaveLength(1);
+	expect(mix[0].day).toBe("2026-07-06…2026-07-07");
+	expect(mix[0]["claude-opus-5"]).toBeCloseTo(0.1727, 4);
 });

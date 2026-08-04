@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { resolveProjectSlug } from "../src/parser/project.mjs";
 
@@ -27,9 +26,9 @@ test("two project directories that share a basename resolve to different identit
 	const personalSlug = resolveProjectSlug(personalDir);
 	const workSlug = resolveProjectSlug(workDir);
 
-	assert.equal(personalSlug, ".openclaw/workspace");
-	assert.equal(workSlug, "ubet-devenv/workspace");
-	assert.notEqual(personalSlug, workSlug);
+	expect(personalSlug).toBe(".openclaw/workspace");
+	expect(workSlug).toBe("ubet-devenv/workspace");
+	expect(personalSlug).not.toBe(workSlug);
 });
 
 test("a directory with no cwd data yet is not permanently cached as null — a later call resolves it once data appears", () => {
@@ -42,10 +41,10 @@ test("a directory with no cwd data yet is not permanently cached as null — a l
 	mkdirSync(dir, { recursive: true });
 
 	const firstLook = resolveProjectSlug(dir);
-	assert.equal(firstLook, null, "no transcript exists yet, so there is genuinely nothing to resolve");
+	expect(firstLook, "no transcript exists yet, so there is genuinely nothing to resolve").toBe(null);
 
 	writeFileSync(join(dir, "session-a.jsonl"), `${JSON.stringify(cwdRecord("/Users/me/late-project"))}\n`);
 
 	const secondLook = resolveProjectSlug(dir);
-	assert.equal(secondLook, "me/late-project", "the null from the first look must not have been cached forever");
+	expect(secondLook, "the null from the first look must not have been cached forever").toBe("me/late-project");
 });

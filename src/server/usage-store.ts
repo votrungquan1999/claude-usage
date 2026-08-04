@@ -23,6 +23,11 @@ export interface UsageEventDocument {
 	// 201 real sessions today falls in this case, so this is the common shape, not an edge one.
 	accountUuid?: string;
 	orgUuid?: string;
+	// Claude Code's own name for the session, from its `ai-title` record. The ONE field here
+	// derived from conversation content rather than counts — uploaded deliberately so the session
+	// list is readable. Absent, not null, when the transcript carried no title yet. Rewritten as a
+	// session develops, so unlike repoKey this is last-writer-wins ($set, not $setOnInsert).
+	sessionTitle?: string;
 	model: string;
 	timestamp: Date;
 	inputTokens: number;
@@ -97,16 +102,22 @@ export async function saveUsageEvents(db: Db, events: UsageEventDocument[]): Pro
 				update: {
 					// First writer wins: identity of who ran a message, never re-stamped by a later
 					// sync. D18 — a session forked from an earlier one must not migrate an inherited
-					// message's cost out of the parent session's drill-down. repoKey joins this group
-					// (D20) — it identifies which repository the message belongs to, not a count, and
-					// is spread in only when present so an undefined value is never sent to Mongo.
-					$setOnInsert: { sessionId, projectSlug, machineId, model, timestamp, isSubagent, ...(repoKey !== undefined && { repoKey }) },
+					// message's cost out of the parent session's drill-down.
+					//
+					// projectSlug and repoKey deliberately do NOT belong here any more. They did while
+					// attribution was resolved once per project directory, where a later sync could
+					// only be a different guess; per-turn attribution makes a resync better informed,
+					// and re-running the backfill is the only way stored history is ever corrected.
+					$setOnInsert: { sessionId, machineId, model, timestamp, isSubagent },
 					// $max, never $set: a sync that caught a message mid-stream carries partial
 					// counts, and this makes that impossible to persist. Covers every token field,
 					// not just output — the cache read-vs-write view depends on all of them. Cost
 					// rises with output for the same message, so it is monotonic too.
 					$max: { inputTokens, cacheReadTokens, cacheWrite5mTokens, cacheWrite1hTokens, outputTokens, costUsd },
-					$set: rest,
+					// repoKey is spread in only when resolved: a machine that never checked the
+					// repository out cannot resolve one, and must not be able to blank an answer a
+					// machine that could already gave.
+					$set: { projectSlug, ...(repoKey !== undefined && { repoKey }), ...rest },
 				},
 				upsert: true,
 			},

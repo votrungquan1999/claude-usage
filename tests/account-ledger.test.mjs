@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { accountFor, recordAccount } from "../src/parser/account-ledger.mjs";
 
@@ -12,7 +11,7 @@ test("only records an entry when the account actually changes", () => {
 	ledger = recordAccount(ledger, "session-1", work, "2026-08-02T09:05:00.000Z");
 	ledger = recordAccount(ledger, "session-1", work, "2026-08-02T09:10:00.000Z");
 
-	assert.equal(ledger["session-1"].length, 1);
+	expect(ledger["session-1"].length).toBe(1);
 
 	ledger = recordAccount(
 		ledger,
@@ -21,8 +20,8 @@ test("only records an entry when the account actually changes", () => {
 		"2026-08-02T14:00:00.000Z",
 	);
 
-	assert.equal(ledger["session-1"].length, 2);
-	assert.equal(ledger["session-1"][1].from, "2026-08-02T14:00:00.000Z");
+	expect(ledger["session-1"].length).toBe(2);
+	expect(ledger["session-1"][1].from).toBe("2026-08-02T14:00:00.000Z");
 });
 
 test("attributes a turn to the account that was active when it ran", () => {
@@ -35,11 +34,11 @@ test("attributes a turn to the account that was active when it ran", () => {
 		],
 	};
 
-	assert.deepEqual(accountFor(ledger, "session-1", "2026-08-02T10:30:00.000Z"), {
+	expect(accountFor(ledger, "session-1", "2026-08-02T10:30:00.000Z")).toStrictEqual({
 		accountUuid: "work",
 		orgUuid: "work-org",
 	});
-	assert.deepEqual(accountFor(ledger, "session-1", "2026-08-02T15:00:00.000Z"), {
+	expect(accountFor(ledger, "session-1", "2026-08-02T15:00:00.000Z")).toStrictEqual({
 		accountUuid: "personal",
 		orgUuid: "personal-org",
 	});
@@ -54,5 +53,5 @@ test("does not attribute a turn to the ledger's earliest entry when that entry w
 		"session-old": [{ from: "2026-08-02T12:00:00.000Z", accountUuid: "acct-personal", orgUuid: "org-personal" }],
 	};
 
-	assert.equal(accountFor(ledger, "session-old", "2026-07-25T09:00:00.000Z"), null);
+	expect(accountFor(ledger, "session-old", "2026-07-25T09:00:00.000Z")).toBe(null);
 });

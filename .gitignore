@@ -1,6 +1,10 @@
 node_modules/
 dist/
 .next/
+.next-e2e/
+/e2e/.auth/
+/test-results/
+/playwright-report/
 .env
 .env.*
 !.env.example

@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { buildStatusState } from "../src/status.mjs";
 
@@ -34,7 +33,7 @@ test("warns when a turn rewrites more cache than it reads", () => {
 		record({ id: 2, cacheRead: 5_000, cacheCreation: 100_000 }),
 	]);
 
-	assert.deepEqual(state.warnings, ["cache miss"]);
+	expect(state.warnings).toStrictEqual(["cache miss"]);
 });
 
 test("warns when context is close enough to full that compaction is coming", () => {
@@ -46,7 +45,7 @@ test("warns when context is close enough to full that compaction is coming", () 
 		[record({ id: 1, cacheRead: 800_000, cacheCreation: 2_000 })],
 	);
 
-	assert.deepEqual(state.warnings, ["compaction near"]);
+	expect(state.warnings).toStrictEqual(["compaction near"]);
 });
 
 test("takes context from the statusLine payload and turn cost from the transcript", () => {
@@ -76,9 +75,9 @@ test("takes context from the statusLine payload and turn cost from the transcrip
 
 	const state = buildStatusState(payload, records);
 
-	assert.equal(state.contextTokens, 438_411);
-	assert.equal(state.contextWindow, 1_000_000);
-	assert.equal(state.turnCost.toFixed(4), "0.2250"); // 400K read at 0.5/MTok + 1K out at $25
-	assert.equal(state.carryCost.toFixed(4), "0.2192"); // 438411 x $5 x 0.1
-	assert.equal(state.priced, true);
+	expect(state.contextTokens).toBe(438_411);
+	expect(state.contextWindow).toBe(1_000_000);
+	expect(state.turnCost.toFixed(4)).toBe("0.2250"); // 400K read at 0.5/MTok + 1K out at $25
+	expect(state.carryCost.toFixed(4)).toBe("0.2192"); // 438411 x $5 x 0.1
+	expect(state.priced).toBe(true);
 });

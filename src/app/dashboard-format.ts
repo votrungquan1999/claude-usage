@@ -153,30 +153,109 @@ export function assignSeriesColorSlots(shownValues: string[], domainOrder: strin
 }
 
 /**
- * Fills every absent calendar day between `firstDay` and `lastDay` inclusive with `makeEmpty`'s
- * result (D11/D24) — never overwrites a day already present in `rows`. Generic over the row
- * shape so the same function fills both `ChartDayRow[]` and `DailyEfficiencyRow[]`.
+ * Rewrites each row's `day` to the label of the bucket it falls in, so the roll-ups that already
+ * group by `day` — `pivotForChart`, `modelMixByDay`, `rollUpDailySavings`, `rollUpEfficiencyByDay`
+ * — bucket for free, summing the underlying quantities and recomputing any ratio from those sums.
  *
- * @param rows - existing rows, each carrying its own `day`
- * @param firstDay - `YYYY-MM-DD`, inclusive
- * @param lastDay - `YYYY-MM-DD`, inclusive
- * @param makeEmpty - builds the placeholder row for one absent day
+ * That reuse is the whole point (D7): model mix is a share of spend, and a bucketing step that
+ * combined the daily PERCENTAGES would be wrong in a way that looks entirely plausible on screen.
+ *
+ * @param rows - rows carrying a calendar `day`
+ * @param buckets - the window's buckets, from `planDayBuckets`
  */
-export function fillMissingDays<T extends { day: string }>(
+export function relabelRowsToBuckets<T extends { day: string }>(rows: T[], buckets: DayBuckets): T[] {
+	// The fallback is unreachable in practice — rows come from a query bounded by the same window
+	// the buckets were planned over — and exists only to keep an `undefined` label out of the data.
+	return rows.map((row) => ({ ...row, day: buckets.labelOf.get(row.day) ?? row.day }));
+}
+
+/**
+ * Fills every bucket with no rows of its own with `makeEmpty`'s result (D11/D24) — never
+ * overwrites a bucket already present in `rows`. Generic over the row shape so the same function
+ * fills `ChartDayRow[]`, `DailyEfficiencyRow[]`, `DailySavingsRow[]` and `ModelMixDayRow[]`.
+ *
+ * @param rows - existing rows, each carrying its bucket label in `day`
+ * @param buckets - the window's buckets, from `planDayBuckets`
+ * @param makeEmpty - builds the placeholder row for one empty bucket
+ */
+export function fillMissingBuckets<T extends { day: string }>(
 	rows: T[],
-	firstDay: string,
-	lastDay: string,
+	buckets: DayBuckets,
 	makeEmpty: (day: string) => T,
 ): T[] {
-	// Keyed by day so a real row always wins — building empties first and writing reals over them
-	// would erase a day's own unpricedEventCount, silently deleting a D17 lower-bound warning.
+	// Keyed by label so a real row always wins — building empties first and writing reals over them
+	// would erase a bucket's own unpricedEventCount, silently deleting a D17 lower-bound warning.
 	const present = new Map(rows.map((row) => [row.day, row]));
 
-	const filled: T[] = [];
-	for (let day = firstDay; day <= lastDay; day = nextDay(day)) {
-		filled.push(present.get(day) ?? makeEmpty(day));
+	return buckets.labels.map((label) => present.get(label) ?? makeEmpty(label));
+}
+
+/** The most bars any per-day chart may render (D7). Past this many days the axis stops being
+ * readable, so consecutive days fold into one bucket instead. */
+export const MAX_CHART_BARS = 20;
+
+/** A window's days grouped into at most `MAX_CHART_BARS` buckets. */
+export interface DayBuckets {
+	/** Each bucket's label, oldest first — a bare `YYYY-MM-DD` when it covers one day, so a window
+	 * of 20 days or fewer keeps exactly today's behaviour. */
+	labels: string[];
+	/** Which bucket each calendar day in the window belongs to. */
+	labelOf: Map<string, string>;
+}
+
+/**
+ * Groups a window's calendar days into at most `MAX_CHART_BARS` buckets (D7). One rule for every
+ * window: 30 days becomes 15 two-day buckets, 90 becomes 18 five-day ones, and anything at or
+ * under 20 days stays one bucket per day.
+ *
+ * Any remainder lands on the OLDEST bucket, never the newest — the eye reads the right edge as
+ * "now", so a short final bar looks like spending collapsed when it only means the bucket is
+ * young.
+ *
+ * @param firstDay - window start, `YYYY-MM-DD`, inclusive
+ * @param lastDay - window end, `YYYY-MM-DD`, inclusive
+ */
+export function planDayBuckets(firstDay: string, lastDay: string): DayBuckets {
+	const days: string[] = [];
+	for (let day = firstDay; day <= lastDay; day = nextDay(day)) days.push(day);
+
+	const span = Math.max(1, Math.ceil(days.length / MAX_CHART_BARS));
+	const labels: string[] = [];
+	const labelOf = new Map<string, string>();
+
+	// The first bucket absorbs the remainder; every one after it is full width.
+	let size = days.length % span || span;
+	for (let index = 0; index < days.length; index += size, size = span) {
+		const members = days.slice(index, index + size);
+		const label = bucketLabel(members[0], members[members.length - 1]);
+		labels.push(label);
+		for (const day of members) labelOf.set(day, label);
 	}
-	return filled;
+
+	return { labels, labelOf };
+}
+
+/**
+ * A bucket's label. A single-day bucket keeps the bare date it has always had, so a window of 20
+ * days or fewer produces byte-identical rows to before bucketing existed; a multi-day one names
+ * both ends, because a bar labelled only with its first day silently claims to be that one day.
+ *
+ * @param firstDay - the bucket's oldest day, `YYYY-MM-DD`
+ * @param lastDay - the bucket's newest day, `YYYY-MM-DD`
+ */
+function bucketLabel(firstDay: string, lastDay: string): string {
+	return firstDay === lastDay ? firstDay : `${firstDay}…${lastDay}`;
+}
+
+/**
+ * A bucket label rendered as an X-axis tick: its first day alone. The full span stays in the
+ * tooltip, which has room for it — a `2026-07-06…2026-07-10` tick is twice as wide as the axis can
+ * carry, and 20 of them collide into the mess bucketing exists to remove.
+ *
+ * @param label - a bucket label from `planDayBuckets`
+ */
+export function bucketAxisTick(label: string): string {
+	return label.slice(0, 10);
 }
 
 /**
@@ -729,7 +808,7 @@ export function rollUpDailySavings(rows: DailyEfficiencyByModelRow[]): DailySavi
 
 /**
  * A zero-valued savings row for a day with no recorded work (D24) — the placeholder
- * `fillMissingDays` inserts so an absent day keeps its place on the axis.
+ * `fillMissingBuckets` inserts so an absent day keeps its place on the axis.
  *
  * @param day - `YYYY-MM-DD`
  */
@@ -750,7 +829,7 @@ export function formatSavingsStatement(netSavedUsd: number): string {
 
 /**
  * A zero-valued efficiency row for a day with no recorded work (D24) — the placeholder
- * `fillMissingDays` inserts so an absent day occupies its own position on the axis. Zeroing
+ * `fillMissingBuckets` inserts so an absent day occupies its own position on the axis. Zeroing
  * `totalCostUsd` is what makes `subagentCostShare` return `null` for the day, which is what makes
  * the line's `connectNulls={false}` draw a real break across a gap.
  *

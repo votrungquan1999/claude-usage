@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/chart";
 import type { DailyEfficiencyRow } from "@/server/usage-queries";
 
-import { subagentCostShare } from "../dashboard-format";
+import { bucketAxisTick, subagentCostShare } from "../dashboard-format";
 
 export interface SubagentShareChartProps {
 	rows: DailyEfficiencyRow[];
@@ -37,7 +37,7 @@ export function SubagentShareChart({ rows }: SubagentShareChartProps): React.JSX
 		<ChartContainer config={config} className="aspect-auto h-56 w-full">
 			<LineChart data={data}>
 				<CartesianGrid vertical={false} />
-				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} />
+				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tickFormatter={bucketAxisTick} />
 				<YAxis tickLine={false} axisLine={false} width={40} tickFormatter={(value: number) => `${value}%`} />
 				<ChartTooltip content={<ChartTooltipContent />} />
 				<Line dataKey="sharePct" type="monotone" stroke="var(--color-sharePct)" strokeWidth={2} dot={false} connectNulls={false} />

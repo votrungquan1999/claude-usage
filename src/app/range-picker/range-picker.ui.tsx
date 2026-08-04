@@ -30,7 +30,9 @@ export interface RangePresetFieldProps {
 export function RangePresetField({ value, items, onSelect, children }: RangePresetFieldProps): React.JSX.Element {
 	return (
 		<Select items={items} value={value} onValueChange={(next: unknown) => onSelect(String(next))}>
-			<SelectTrigger className="w-44">
+			{/* Named, because the trigger's only text is the current value: unlabelled it announces
+			    as "combobox, Last 30 days", which says what is chosen but never what it chooses. */}
+			<SelectTrigger className="w-44" aria-label="Date range">
 				<SelectValue />
 			</SelectTrigger>
 			<SelectContent>{children}</SelectContent>

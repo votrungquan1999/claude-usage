@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { turnCost } from "../src/parser/pricing.mjs";
 
@@ -62,7 +61,7 @@ function turnFrom({ model, day, input, cacheRead, cacheWrite5m, cacheWrite1h = 0
 
 for (const golden of GOLDEN) {
 	test(`reproduces ccusage cost for ${golden.model} on ${golden.day}`, () => {
-		assert.equal(turnCost(turnFrom(golden)).toFixed(6), golden.cost.toFixed(6));
+		expect(turnCost(turnFrom(golden)).toFixed(6)).toBe(golden.cost.toFixed(6));
 	});
 }
 
@@ -81,6 +80,6 @@ test("prices Opus 5 within the bound ccusage implies", () => {
 	const allOneHour = turnCost(turnFrom({ ...day, cacheWrite5m: 0, cacheWrite1h: creation }));
 
 	// The true 5m/1h split is unknown, but the real cost must sit between the two extremes.
-	assert.ok(allFiveMinute < 254.7519155, `all-5m floor was ${allFiveMinute}`);
-	assert.ok(allOneHour > 254.7519155, `all-1h ceiling was ${allOneHour}`);
+	expect(allFiveMinute, `all-5m floor was ${allFiveMinute}`).toBeLessThan(254.7519155);
+	expect(allOneHour, `all-1h ceiling was ${allOneHour}`).toBeGreaterThan(254.7519155);
 });

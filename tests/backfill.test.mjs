@@ -1,10 +1,9 @@
-import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { runBackfill } from "../bin/backfill.mjs";
 
@@ -90,10 +89,10 @@ test("walks a project's main transcript and posts its events to the sync endpoin
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 1);
-		assert.equal(received.length, 1);
-		assert.equal(received[0].machineId, "machine-abc");
-		assert.equal(received[0].events[0].requestId, "req_1");
+		expect(summary.eventsSent).toBe(1);
+		expect(received).toHaveLength(1);
+		expect(received[0].machineId).toBe("machine-abc");
+		expect(received[0].events[0].requestId).toBe("req_1");
 	} finally {
 		server.close();
 	}
@@ -126,8 +125,8 @@ test("posts repoKey once per project directory when its cwd is a real git repo",
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 1);
-		assert.match(received[0].events[0].repoKey, /^[0-9a-f]{64}$/, "expected a sha256 hex digest");
+		expect(summary.eventsSent).toBe(1);
+		expect(received[0].events[0].repoKey, "expected a sha256 hex digest").toMatch(/^[0-9a-f]{64}$/);
 	} finally {
 		server.close();
 	}
@@ -180,9 +179,9 @@ test("finds transcripts at every walk depth, including a subagent nested inside 
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 3, "all three assistant transcripts contributed their event");
+		expect(summary.eventsSent, "all three assistant transcripts contributed their event").toBe(3);
 		const requestIds = received.flatMap((body) => body.events.map((e) => e.requestId)).sort();
-		assert.deepEqual(requestIds, ["req_main", "req_sub", "req_workflow_sub"]);
+		expect(requestIds).toStrictEqual(["req_main", "req_sub", "req_workflow_sub"]);
 	} finally {
 		server.close();
 	}
@@ -204,8 +203,8 @@ test("a transcript with no assistant turns triggers no request at all", async ()
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 0);
-		assert.equal(received.length, 0, "an empty batch must not even attempt a round trip");
+		expect(summary.eventsSent).toBe(0);
+		expect(received, "an empty batch must not even attempt a round trip").toHaveLength(0);
 	} finally {
 		server.close();
 	}
@@ -230,9 +229,9 @@ test("a project directory with no cwd-bearing transcript resolves no identity an
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 0);
-		assert.equal(received.length, 0);
-		assert.equal(summary.directoriesSkipped, 1, "the null-slug directory is counted, not silently skipped");
+		expect(summary.eventsSent).toBe(0);
+		expect(received).toHaveLength(0);
+		expect(summary.directoriesSkipped, "the null-slug directory is counted, not silently skipped").toBe(1);
 	} finally {
 		server.close();
 	}
@@ -269,10 +268,10 @@ test("a file whose turns exceed the per-request cap splits into more than one re
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, TURN_COUNT);
-		assert.equal(received.length, 2, "2,001 events at a 2,000 cap must split into two requests");
-		assert.equal(received[0].events.length, 2000);
-		assert.equal(received[1].events.length, 1);
+		expect(summary.eventsSent).toBe(TURN_COUNT);
+		expect(received, "2,001 events at a 2,000 cap must split into two requests").toHaveLength(2);
+		expect(received[0].events).toHaveLength(2000);
+		expect(received[1].events).toHaveLength(1);
 	} finally {
 		server.close();
 	}
@@ -302,8 +301,8 @@ test("a malformed line in a transcript is skipped, not fatal to the run", async 
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 1);
-		assert.equal(received[0].events[0].requestId, "req_good");
+		expect(summary.eventsSent).toBe(1);
+		expect(received[0].events[0].requestId).toBe("req_good");
 	} finally {
 		server.close();
 	}
@@ -335,8 +334,8 @@ test("re-running against the same corpus produces the same set of events", async
 		const second = await runBackfill({ projectsRoot, home, env });
 		const secondEvents = received.splice(0, received.length).flatMap((b) => b.events);
 
-		assert.equal(first.eventsSent, second.eventsSent);
-		assert.deepEqual(secondEvents, firstEvents, "the exact same event payload is produced on both runs");
+		expect(first.eventsSent).toBe(second.eventsSent);
+		expect(secondEvents, "the exact same event payload is produced on both runs").toStrictEqual(firstEvents);
 	} finally {
 		server.close();
 	}
@@ -366,14 +365,15 @@ test("only the mapper's aggregate fields ever leave the process — no raw trans
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 1);
+		expect(summary.eventsSent).toBe(1);
 		const rawBody = JSON.stringify(received[0]);
-		assert.equal(rawBody.includes(SENTINEL), false, "no raw prose in the request body");
-		assert.equal(rawBody.includes("cwd"), false, "no raw record field outside the mapper's allowlist");
+		expect(rawBody.includes(SENTINEL), "no raw prose in the request body").toBe(false);
+		expect(rawBody.includes("cwd"), "no raw record field outside the mapper's allowlist").toBe(false);
 
-		assert.deepEqual(
+		expect(
 			Object.keys(received[0].events[0]).sort(),
-			[
+			"only MappedUsageEvent fields leave this file — the aggregates-only guarantee",
+		).toStrictEqual([
 				"cacheReadTokens",
 				"cacheWrite1hTokens",
 				"cacheWrite5mTokens",
@@ -389,9 +389,7 @@ test("only the mapper's aggregate fields ever leave the process — no raw trans
 				"requestId",
 				"sessionId",
 				"timestamp",
-			].sort(),
-			"only MappedUsageEvent fields leave this file — the aggregates-only guarantee",
-		);
+			].sort());
 	} finally {
 		server.close();
 	}
@@ -428,9 +426,9 @@ test("reads the local account ledger once per run, attributing a backfilled even
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 1);
-		assert.equal(received[0].events[0].accountUuid, "account-work");
-		assert.equal(received[0].events[0].orgUuid, "org-work");
+		expect(summary.eventsSent).toBe(1);
+		expect(received[0].events[0].accountUuid).toBe("account-work");
+		expect(received[0].events[0].orgUuid).toBe("org-work");
 	} finally {
 		server.close();
 	}
@@ -487,9 +485,9 @@ test("a request that THROWS (dropped connection, not just a non-2xx response) fo
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(received.length, 1, "the second file's request still landed after the first threw");
-		assert.equal(summary.eventsSent, 1, "only the succeeding file's event is counted as sent");
-		assert.equal(summary.failures.length, 1, "the thrown request is reported, not silently dropped or fatal");
+		expect(received, "the second file's request still landed after the first threw").toHaveLength(1);
+		expect(summary.eventsSent, "only the succeeding file's event is counted as sent").toBe(1);
+		expect(summary.failures, "the thrown request is reported, not silently dropped or fatal").toHaveLength(1);
 	} finally {
 		server.close();
 	}
@@ -510,8 +508,8 @@ test("reports which env vars are missing, and attempts no work at all, when unco
 
 	const summary = await runBackfill({ projectsRoot, home, env: {} });
 
-	assert.deepEqual(summary.missingConfig, ["CLAUDE_USAGE_API_URL", "CLAUDE_USAGE_SECRET"]);
-	assert.equal(summary.filesProcessed, 0, "must not even walk the corpus when unconfigured");
+	expect(summary.missingConfig).toStrictEqual(["CLAUDE_USAGE_API_URL", "CLAUDE_USAGE_SECRET"]);
+	expect(summary.filesProcessed, "must not even walk the corpus when unconfigured").toBe(0);
 });
 
 test("the CLI itself exits non-zero and names the missing vars when run unconfigured", () => {
@@ -527,10 +525,10 @@ test("the CLI itself exits non-zero and names the missing vars when run unconfig
 		encoding: "utf8",
 	});
 
-	assert.equal(result.status, 1, "unconfigured must exit non-zero, not read as success");
+	expect(result.status, "unconfigured must exit non-zero, not read as success").toBe(1);
 	const output = result.stdout + result.stderr;
-	assert.match(output, /CLAUDE_USAGE_API_URL/);
-	assert.match(output, /CLAUDE_USAGE_SECRET/);
+	expect(output).toMatch(/CLAUDE_USAGE_API_URL/);
+	expect(output).toMatch(/CLAUDE_USAGE_SECRET/);
 });
 
 test("a failed upload for one file doesn't stop the run — later files still get processed and the failure is reported", async () => {
@@ -577,9 +575,9 @@ test("a failed upload for one file doesn't stop the run — later files still ge
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(received.length, 2, "both files were attempted, not aborted after the first failure");
-		assert.equal(summary.eventsSent, 1, "only the succeeding file's event is counted as sent");
-		assert.equal(summary.failures.length, 1, "the failed file is reported, not silently dropped");
+		expect(received, "both files were attempted, not aborted after the first failure").toHaveLength(2);
+		expect(summary.eventsSent, "only the succeeding file's event is counted as sent").toBe(1);
+		expect(summary.failures, "the failed file is reported, not silently dropped").toHaveLength(1);
 	} finally {
 		server.close();
 	}
@@ -620,8 +618,8 @@ test("runBackfill totals the server's rejected count across the run rather than 
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(summary.eventsSent, 1);
-		assert.equal(summary.eventsRejected, 1, "rejected must be totalled and reported, not silently dropped");
+		expect(summary.eventsSent).toBe(1);
+		expect(summary.eventsRejected, "rejected must be totalled and reported, not silently dropped").toBe(1);
 	} finally {
 		server.close();
 	}
@@ -669,7 +667,7 @@ test("the CLI's printed summary names the rejected count, not just events sent (
 			child.on("close", () => resolve(out));
 		});
 
-		assert.match(stdout, /1 rejected/, "the operator must see rejected events, not just a lower sent count");
+		expect(stdout, "the operator must see rejected events, not just a lower sent count").toMatch(/1 rejected/);
 	} finally {
 		server.close();
 	}

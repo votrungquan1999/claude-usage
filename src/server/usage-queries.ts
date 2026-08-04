@@ -277,6 +277,9 @@ export interface SessionListRow {
 	costUsd: number;
 	unpricedEventCount: number;
 	eventCount: number;
+	/** Claude Code's own name for the session. Undefined when it never recorded one — sessions
+	 * synced before titles were captured stay unnamed until a backfill re-run. */
+	sessionTitle?: string;
 	/** Normalized model names, so this is not the one surface in the app showing dated model ids. */
 	models: string[];
 	/** The session's cost across all time. Differs from `costUsd` only when the session straddles
@@ -322,6 +325,13 @@ export async function listSessions(
 					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
 					eventCount: { $sum: 1 },
 					models: { $addToSet: "$model" },
+					// Newest NON-NULL title. `$max` ignores null and missing, and BSON compares these
+					// objects field-by-field — so `t` decides and the winner is the latest event that
+					// actually carried a title. Reading the newest event's title outright would blank
+					// a named session whenever its last tail sync missed the `ai-title` record.
+					latestTitle: {
+						$max: { $cond: [{ $ifNull: ["$sessionTitle", false] }, { t: "$timestamp", v: "$sessionTitle" }, null] },
+					},
 				},
 			},
 			{
@@ -351,6 +361,7 @@ export async function listSessions(
 			costUsd: row.costUsd,
 			unpricedEventCount: row.unpricedEventCount,
 			eventCount: row.eventCount,
+			sessionTitle: row.latestTitle?.v,
 			// $addToSet returns the RAW stored strings; normalizing keeps this from being the one
 			// surface in the app that shows dated model ids.
 			models: [...new Set(row.models.map(normalizeModel))].sort(),
@@ -385,6 +396,9 @@ interface RawSessionListRow {
 	unpricedEventCount: number;
 	eventCount: number;
 	models: string[];
+	/** The `$max` composite — `t` only exists to order the comparison; `v` is the title itself.
+	 * Null when no event in the session ever carried one. */
+	latestTitle?: { t: Date; v: string } | null;
 }
 
 /** The `$facet` stage's combined result shape. */

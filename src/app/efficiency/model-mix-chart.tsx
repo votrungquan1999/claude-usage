@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/chart";
 
 import type { SeriesColorMap } from "../cost-split-view/cost-split-view.type";
-import { OTHER_SERIES_KEY, type ModelMixDayRow } from "../dashboard-format";
+import { OTHER_SERIES_KEY, bucketAxisTick, type ModelMixDayRow } from "../dashboard-format";
 
 export interface ModelMixChartProps {
 	rows: ModelMixDayRow[];
@@ -62,7 +62,7 @@ export function ModelMixChart({ rows, seriesKeys, colors }: ModelMixChartProps):
 		<ChartContainer config={config} className="aspect-auto h-64 w-full">
 			<AreaChart data={data}>
 				<CartesianGrid vertical={false} />
-				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} />
+				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tickFormatter={bucketAxisTick} />
 				<YAxis
 					tickLine={false}
 					axisLine={false}

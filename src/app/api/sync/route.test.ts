@@ -366,3 +366,22 @@ test("a wrong secret never causes the database to be contacted", async () => {
 	// Belt-and-suspenders: also confirm nothing landed, via the separate always-real connection.
 	expect(await db.collection("usage_events").countDocuments({ requestId: "req_wrong" })).toBe(0);
 });
+
+test("the session title survives the server's own allowlist and reaches the stored document", async () => {
+	// The route rebuilds each event as a fresh object literal rather than trusting the client's,
+	// so a field the mapper sends is dropped unless the route copies it too. Every other test here
+	// writes through saveUsageEvents directly, which bypasses exactly that step — this one does not.
+	const response = await POST(
+		syncRequest(
+			{
+				machineId: "machine-title",
+				events: [usageEvent({ requestId: "req_title", messageId: "msg_title", sessionTitle: "Migrate the test runner" })],
+			},
+			{ "x-claude-usage-secret": SECRET },
+		),
+	);
+	expect(response.status).toBe(200);
+
+	const stored = await db.collection("usage_events").findOne({ requestId: "req_title" });
+	expect(stored?.sessionTitle).toBe("Migrate the test runner");
+});

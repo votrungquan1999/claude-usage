@@ -11,7 +11,7 @@ import {
 	ChartTooltipContent,
 } from "@/components/ui/chart";
 
-import type { ChartDayRow } from "../dashboard-format";
+import { bucketAxisTick, type ChartDayRow } from "../dashboard-format";
 
 import type { SeriesColorMap } from "./cost-split-view.type";
 
@@ -65,7 +65,7 @@ export function CostChart({ data, seriesKeys, colors }: CostChartProps): React.J
 		<ChartContainer config={config} className="aspect-auto h-64 w-full">
 			<BarChart data={chartData}>
 				<CartesianGrid vertical={false} />
-				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} />
+				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tickFormatter={bucketAxisTick} />
 				<ChartTooltip content={<ChartTooltipContent />} />
 				<ChartLegend content={<ChartLegendContent />} />
 				{barIds.map((id) => (

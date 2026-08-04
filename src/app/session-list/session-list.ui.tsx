@@ -116,7 +116,8 @@ export function SessionSortField({ value, items, children }: SessionSortFieldPro
 
 	return (
 		<Select items={items} value={value} onValueChange={(next: unknown) => selectSort(String(next))}>
-			<SelectTrigger size="sm" className="w-48">
+			{/* Named for the same reason as the range picker's trigger — see RangePresetField. */}
+			<SelectTrigger size="sm" className="w-48" aria-label="Sort sessions">
 				<SelectValue />
 			</SelectTrigger>
 			<SelectContent>{children}</SelectContent>

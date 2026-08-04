@@ -3,10 +3,12 @@ import { type CostSplitDimension, DASHBOARD_TIMEZONE } from "@/server/usage-quer
 import {
 	assignSeriesColorSlots,
 	dayKeyInTimezone,
-	fillMissingDays,
+	fillMissingBuckets,
 	TOP_SERIES_COUNT,
 	pivotForChart,
+	planDayBuckets,
 	rankDimensionTotals,
+	relabelRowsToBuckets,
 	summarizeUnpricedDays,
 } from "../dashboard-format";
 import { loadCostPerDay, loadDimensionDomain } from "../dashboard-loaders";
@@ -69,16 +71,20 @@ export async function CostSplitView({
 	const firstDay = dayKeyInTimezone(new Date(fromMs), DASHBOARD_TIMEZONE);
 	const lastDay = dayKeyInTimezone(new Date(toMs), DASHBOARD_TIMEZONE);
 
+	// Ranked over the RAW rows: the top-N cap is a property of the window, not of how it is drawn,
+	// so bucketing must not be able to change which five names get their own series.
 	const totals = rankDimensionTotals(rows);
 	const topValues = totals.slice(0, TOP_SERIES_COUNT).map((total) => total.dimensionValue);
-	// Filled AFTER the pivot and the top-N cap: a synthetic row inserted earlier would carry no
-	// dimensionValue, and any placeholder one would rank as a phantom series — landing inside the
-	// top 5 on a narrow window and folding into "Other" on a wide one (D11/D24).
-	const chartData = fillMissingDays(pivotForChart(rows, topValues), firstDay, lastDay, (day) => ({
-		day,
-		unpricedEventCount: 0,
-		eventCount: 0,
-	}));
+	// Relabelled BEFORE the pivot so a multi-day bar is the sum of its days (D7), and filled AFTER
+	// the pivot and the top-N cap: a synthetic row inserted earlier would carry no dimensionValue,
+	// and any placeholder one would rank as a phantom series — landing inside the top 5 on a narrow
+	// window and folding into "Other" on a wide one (D11/D24).
+	const buckets = planDayBuckets(firstDay, lastDay);
+	const chartData = fillMissingBuckets(
+		pivotForChart(relabelRowsToBuckets(rows, buckets), topValues),
+		buckets,
+		(day) => ({ day, unpricedEventCount: 0, eventCount: 0 }),
+	);
 	const seriesColors = assignSeriesColorSlots(topValues, domainOrder);
 
 	const tableColors: SeriesColorMap = Object.fromEntries(

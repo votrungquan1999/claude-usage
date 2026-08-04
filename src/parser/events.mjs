@@ -14,9 +14,9 @@ import { isPricedModel, turnCost } from "./pricing.mjs";
  * @property {string} sessionId
  * @property {string} projectSlug
  * @property {string} machineId
- * @property {string} [repoKey] - opaque hash of the normalized git remote (D20); absent, not
- *   null, when the project directory's cwd isn't a git repo, or no longer exists — never
- *   fabricated as a name-based guess
+ * @property {string} [repoKey] - opaque hash of the normalized git remote (D20), resolved per
+ *   TURN; absent, not null, when nothing about the turn or its project directory resolved a
+ *   repository — never fabricated as a name-based guess
  * @property {string} [accountUuid] - absent, not null, when the session predates the ledger (D7)
  * @property {string} [orgUuid]
  * @property {string} model         - raw, not normalized — grouping happens at query time
@@ -39,15 +39,41 @@ import { isPricedModel, turnCost } from "./pricing.mjs";
  *
  * @param {import("./dedupe.mjs").Turn} turn
  * @param {object} context
- * @param {string} context.projectSlug - resolved once per project directory (Step 5), not per turn
+ * @param {string} context.projectSlug - this TURN's attribution, from `attributeTurns`; falls back
+ *   to the project directory's own slug when the turn offered no evidence of its own
  * @param {string} context.machineId
- * @param {string} [context.repoKey] - resolved once per project directory (D20), not per turn;
- *   absent, not null, when the project directory's cwd isn't a git repo or no longer exists
+ * @param {string} [context.repoKey] - this TURN's repository (D20); absent, not null, when neither
+ *   the turn nor the project directory resolved one — never fabricated as a name-based guess
  * @param {Record<string, import("./account-ledger.mjs").AccountEntry[]>} context.accountLedger
  * @returns {MappedUsageEvent | null} null when the turn is a placeholder that must never be
  *   stored as spend — callers map over an array of turns and filter out the nulls
  */
-export function mapTurnToEvent(turn, { projectSlug, machineId, repoKey, accountLedger }) {
+/**
+ * The session's display name, as Claude Code recorded it.
+ *
+ * Lives in its OWN `ai-title` record rather than on any assistant turn, and is rewritten as the
+ * session develops — so the last one is the current one.
+ *
+ * This is the one field here derived from conversation CONTENT rather than counts. It is uploaded
+ * deliberately; `lastPrompt`, which sits in the same transcripts and holds raw prompt text, is not
+ * and must never be.
+ *
+ * @param {object[]} records - every record read from the transcript, not just assistant turns
+ * @returns {string|undefined} the latest title, or undefined when the transcript carries none
+ */
+export function resolveSessionTitle(records) {
+	let title;
+	for (const record of records) {
+		// Empty titles are skipped rather than accepted: a blank one would win over a real earlier
+		// title and render as an empty name column.
+		if (record?.type === "ai-title" && typeof record.aiTitle === "string" && record.aiTitle !== "") {
+			title = record.aiTitle;
+		}
+	}
+	return title;
+}
+
+export function mapTurnToEvent(turn, { projectSlug, machineId, repoKey, accountLedger, sessionTitle }) {
 	// Claude Code writes zero-usage "<synthetic>" turns for errors/interruptions; the
 	// requestId check is a defensive invariant guard (vacuous on today's data — every
 	// non-synthetic record already carries a requestId — but cheap to keep for a future
@@ -65,6 +91,9 @@ export function mapTurnToEvent(turn, { projectSlug, machineId, repoKey, accountL
 		projectSlug,
 		machineId,
 		...(repoKey !== undefined && { repoKey }),
+		// Spread in only when known, like repoKey: the store puts unlisted fields in $set, so
+		// sending it as undefined would erase a title an earlier sync already recorded.
+		...(sessionTitle !== undefined && { sessionTitle }),
 		...(account && { accountUuid: account.accountUuid, orgUuid: account.orgUuid }),
 		model: turn.model,
 		timestamp: new Date(turn.timestamp),

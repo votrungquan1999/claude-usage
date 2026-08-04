@@ -681,6 +681,38 @@ test("raw model variants that normalize to the same model merge into one row, so
 	expect(rows[0].grossSavedUsd).toBeCloseTo(9, 6);
 });
 
+test("a session's title is the most recent one recorded, even when its newest event carries none", async () => {
+	const range = dayRange("2026-11-06");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_t1",
+			messageId: "msg_t1",
+			sessionId: "sess-titled",
+			timestamp: new Date("2026-11-06T01:00:00.000Z"),
+			sessionTitle: "Investigate flaky test",
+		}),
+		event({
+			requestId: "req_t2",
+			messageId: "msg_t2",
+			sessionId: "sess-titled",
+			timestamp: new Date("2026-11-06T02:00:00.000Z"),
+			sessionTitle: "Migrate the test runner",
+		}),
+		// Newest event, no title: a tail sync whose window did not reach back to the `ai-title`
+		// record. Taking the newest event's title outright would blank a session that HAS a name.
+		event({
+			requestId: "req_t3",
+			messageId: "msg_t3",
+			sessionId: "sess-titled",
+			timestamp: new Date("2026-11-06T03:00:00.000Z"),
+		}),
+	]);
+
+	const page = await listSessions(db, range, 0, 25, SessionSortOrder.Cost);
+
+	expect(page.rows[0].sessionTitle).toBe("Migrate the test runner");
+});
+
 test("listSessions ranks a window's sessions by what they cost in it, breaking ties by session id (D38)", async () => {
 	const range = dayRange("2026-11-02");
 	await saveUsageEvents(db, [

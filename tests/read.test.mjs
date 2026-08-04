@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { readAllRecords, readTailRecords } from "../src/parser/read.mjs";
 
@@ -24,10 +23,7 @@ test("discards the partial line the tail window cuts through", () => {
 	// A window landing mid-way through record one must not yield a broken record.
 	const records = readTailRecords(path, 200);
 
-	assert.deepEqual(
-		records.map((r) => r.marker),
-		["second", "third"],
-	);
+	expect(records.map((r) => r.marker)).toStrictEqual(["second", "third"]);
 });
 
 test("keeps the first record, which the tail reader deliberately drops", () => {
@@ -36,10 +32,7 @@ test("keeps the first record, which the tail reader deliberately drops", () => {
 		{ type: "assistant", marker: "second" },
 	]);
 
-	assert.deepEqual(
-		readAllRecords(path).map((r) => r.marker),
-		["first", "second"],
-	);
+	expect(readAllRecords(path).map((r) => r.marker)).toStrictEqual(["first", "second"]);
 });
 
 test("keeps a multi-byte UTF-8 record intact when it straddles the internal 1 MiB chunk boundary", () => {
@@ -58,7 +51,7 @@ test("keeps a multi-byte UTF-8 record intact when it straddles the internal 1 Mi
 
 	const records = readAllRecords(path);
 
-	assert.deepEqual(records, [{ s: "é🎯漢" }]);
+	expect(records).toStrictEqual([{ s: "é🎯漢" }]);
 });
 
 test("reads a multi-MB transcript fast enough to render every turn", () => {
@@ -70,5 +63,5 @@ test("reads a multi-MB transcript fast enough to render every turn", () => {
 	readTailRecords(path);
 	const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
 
-	assert.ok(elapsedMs < 100, `tail read took ${elapsedMs.toFixed(1)}ms`);
+	expect(elapsedMs, `tail read took ${elapsedMs.toFixed(1)}ms`).toBeLessThan(100);
 });

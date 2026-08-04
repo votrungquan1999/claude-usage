@@ -1,7 +1,13 @@
-import { DASHBOARD_TIMEZONE } from "@/server/usage-queries";
+import { DASHBOARD_TIMEZONE, rollUpEfficiencyByDay } from "@/server/usage-queries";
 
-import { dayKeyInTimezone, emptyEfficiencyRow, fillMissingDays } from "../dashboard-format";
-import { loadDailyEfficiency } from "../dashboard-loaders";
+import {
+	dayKeyInTimezone,
+	emptyEfficiencyRow,
+	fillMissingBuckets,
+	planDayBuckets,
+	relabelRowsToBuckets,
+} from "../dashboard-format";
+import { loadDailyEfficiencyByModel } from "../dashboard-loaders";
 import { SubagentShareChart } from "./subagent-share-chart";
 
 export interface SubagentShareViewProps {
@@ -15,9 +21,15 @@ export interface SubagentShareViewProps {
  * has in common with the cache card, so the two read one query rather than two.
  */
 export async function SubagentShareView({ fromMs, toMs }: SubagentShareViewProps): Promise<React.JSX.Element> {
-	const rows = await loadDailyEfficiency(fromMs, toMs);
+	// The per-model rows, not the pre-rolled-up daily ones: rolling up AFTER relabelling is what
+	// makes a bucket's share the ratio of its summed costs rather than a mean of daily ratios (D7).
+	// Same cached query either way — `loadDailyEfficiency` is itself a roll-up of this one.
+	const rows = await loadDailyEfficiencyByModel(fromMs, toMs);
 	const firstDay = dayKeyInTimezone(new Date(fromMs), DASHBOARD_TIMEZONE);
 	const lastDay = dayKeyInTimezone(new Date(toMs), DASHBOARD_TIMEZONE);
 
-	return <SubagentShareChart rows={fillMissingDays(rows, firstDay, lastDay, emptyEfficiencyRow)} />;
+	const buckets = planDayBuckets(firstDay, lastDay);
+	const bucketed = rollUpEfficiencyByDay(relabelRowsToBuckets(rows, buckets));
+
+	return <SubagentShareChart rows={fillMissingBuckets(bucketed, buckets, emptyEfficiencyRow)} />;
 }

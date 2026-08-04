@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { findTranscript } from "../src/locate.mjs";
 
@@ -21,7 +20,7 @@ test("finds the session's transcript even when the shell has cd'd elsewhere", ()
 		cwd: "/Users/me/work/subrepo",
 	});
 
-	assert.equal(found, join(sessionDir, "abc-123.jsonl"));
+	expect(found).toBe(join(sessionDir, "abc-123.jsonl"));
 });
 
 test("falls back to the cwd slug when no session id is given, mapping dots and underscores too", () => {
@@ -37,5 +36,5 @@ test("falls back to the cwd slug when no session id is given, mapping dots and u
 		cwd: "/Users/me/wo.rk_dir",
 	});
 
-	assert.equal(found, join(sessionDir, "xyz-789.jsonl"));
+	expect(found).toBe(join(sessionDir, "xyz-789.jsonl"));
 });

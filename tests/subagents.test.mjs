@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { subagentCostSince } from "../src/parser/subagents.mjs";
 
@@ -44,7 +43,7 @@ test("counts only subagent work done since the previous turn", () => {
 	// Only the 11:00 turn falls after the cutoff: 1000 output tokens at $25/MTok.
 	const cost = subagentCostSince(transcript, "2026-08-01T10:00:00.000Z");
 
-	assert.equal(cost.toFixed(4), "0.0250");
+	expect(cost.toFixed(4)).toBe("0.0250");
 });
 
 test("counts agents launched inside a workflow, nested two levels under subagents/", () => {
@@ -70,5 +69,5 @@ test("counts agents launched inside a workflow, nested two levels under subagent
 	// 1000 output tokens at $25/MTok — 2000 (0.0500) if journal.jsonl were wrongly included.
 	const cost = subagentCostSince(transcript, "2026-08-01T10:00:00.000Z");
 
-	assert.equal(cost.toFixed(4), "0.0250");
+	expect(cost.toFixed(4)).toBe("0.0250");
 });

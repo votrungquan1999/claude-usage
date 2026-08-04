@@ -3,8 +3,10 @@ import { DASHBOARD_TIMEZONE } from "@/server/usage-queries";
 import {
 	dayKeyInTimezone,
 	emptySavingsRow,
-	fillMissingDays,
+	fillMissingBuckets,
 	formatSavingsStatement,
+	planDayBuckets,
+	relabelRowsToBuckets,
 	rollUpDailySavings,
 } from "../dashboard-format";
 import { loadDailyEfficiencyByModel } from "../dashboard-loaders";
@@ -27,7 +29,10 @@ export async function CacheSavingsView({ fromMs, toMs }: CacheSavingsViewProps):
 	const firstDay = dayKeyInTimezone(new Date(fromMs), DASHBOARD_TIMEZONE);
 	const lastDay = dayKeyInTimezone(new Date(toMs), DASHBOARD_TIMEZONE);
 
-	const daily = fillMissingDays(rollUpDailySavings(rows), firstDay, lastDay, emptySavingsRow);
+	// Relabelled before the roll-up so a bucket is the sum of its days, including the "one unpriced
+	// model makes the whole figure a floor" rule `rollUpDailySavings` already applies (D7).
+	const buckets = planDayBuckets(firstDay, lastDay);
+	const daily = fillMissingBuckets(rollUpDailySavings(relabelRowsToBuckets(rows, buckets)), buckets, emptySavingsRow);
 	const netTotal = daily.reduce((sum, row) => sum + row.netSavedUsd, 0);
 	// A model with no known price contributes $0, which is indistinguishable from an idle cache —
 	// so the range total is a floor, and says so rather than reading as measured.

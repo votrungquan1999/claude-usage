@@ -1,11 +1,10 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { cacheSavings, isPricedModel, turnCost } from "../src/parser/pricing.mjs";
 
 test("reports whether a model has a known price, so $0 is never mistaken for cheap", () => {
-	assert.equal(isPricedModel("claude-opus-5[1m]"), true);
-	assert.equal(isPricedModel("claude-something-unreleased"), false);
+	expect(isPricedModel("claude-opus-5[1m]")).toBe(true);
+	expect(isPricedModel("claude-something-unreleased")).toBe(false);
 });
 
 test("prices each cache tier at its own multiplier", () => {
@@ -28,7 +27,7 @@ test("prices each cache tier at its own multiplier", () => {
 	};
 
 	// $5 input + $0.50 read (0.1x) + $6.25 5m (1.25x) + $10 1h (2.0x) + $25 output
-	assert.equal(turnCost(turn), 46.75);
+	expect(turnCost(turn)).toBe(46.75);
 });
 
 test("prices a model string carrying a [1m] suffix", () => {
@@ -46,7 +45,7 @@ test("prices a model string carrying a [1m] suffix", () => {
 		},
 	};
 
-	assert.equal(turnCost(turn), 30); // $5 input + $25 output
+	expect(turnCost(turn)).toBe(30); // $5 input + $25 output
 });
 
 test("uses the price effective at the message's timestamp", () => {
@@ -64,8 +63,8 @@ test("uses the price effective at the message's timestamp", () => {
 		},
 	});
 
-	assert.equal(turnCost(sonnetTurn("2026-08-31T23:00:00.000Z")), 12, "intro $2/$10");
-	assert.equal(turnCost(sonnetTurn("2026-09-01T00:00:00.000Z")), 18, "list $3/$15");
+	expect(turnCost(sonnetTurn("2026-08-31T23:00:00.000Z")), "intro $2/$10").toBe(12);
+	expect(turnCost(sonnetTurn("2026-09-01T00:00:00.000Z")), "list $3/$15").toBe(18);
 });
 
 test("cache savings separate what reads saved from what the writes cost extra", () => {
@@ -77,10 +76,10 @@ test("cache savings separate what reads saved from what the writes cost extra", 
 	});
 
 	// A read bills at 0.1x, so it saves the other 0.9x: $4.50.
-	assert.equal(savings.grossUsd, 4.5);
+	expect(savings.grossUsd).toBe(4.5);
 	// Writes bill at 1.25x and 2.0x; only the surcharge above 1x is what caching cost: $1.25 + $5.
-	assert.equal(savings.writePremiumUsd, 6.25);
-	assert.equal(savings.netUsd, -1.75);
+	expect(savings.writePremiumUsd).toBe(6.25);
+	expect(savings.netUsd).toBe(-1.75);
 });
 
 test("a large one-hour write that is barely read back costs more than it saves (D35)", () => {
@@ -92,8 +91,8 @@ test("a large one-hour write that is barely read back costs more than it saves (
 		cacheWrite1hTokens: 417_000,
 	});
 
-	assert.ok(savings.netUsd < 0, `expected a negative net, got ${savings.netUsd}`);
-	assert.ok(savings.grossUsd > 0, "reads still saved something; it just did not cover the write");
+	expect(savings.netUsd, `expected a negative net, got ${savings.netUsd}`).toBeLessThan(0);
+	expect(savings.grossUsd, "reads still saved something; it just did not cover the write").toBeGreaterThan(0);
 });
 
 test("an unknown model reports zero saved, which isPricedModel is what distinguishes from measured zero", () => {
@@ -103,8 +102,8 @@ test("an unknown model reports zero saved, which isPricedModel is what distingui
 		cacheWrite1hTokens: 0,
 	});
 
-	assert.deepEqual(savings, { grossUsd: 0, writePremiumUsd: 0, netUsd: 0 });
-	assert.equal(isPricedModel("claude-something-unreleased"), false);
+	expect(savings).toStrictEqual({ grossUsd: 0, writePremiumUsd: 0, netUsd: 0 });
+	expect(isPricedModel("claude-something-unreleased")).toBe(false);
 });
 
 test("cache savings follow the price in effect at the time, not today's price", () => {
@@ -112,6 +111,6 @@ test("cache savings follow the price in effect at the time, not today's price", 
 	// differently either side of that instant, or a local day spanning it is mispriced by 50%.
 	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
 
-	assert.equal(cacheSavings("claude-sonnet-5", "2026-08-31T18:00:00.000Z", tokens).grossUsd, 1.8);
-	assert.equal(cacheSavings("claude-sonnet-5", "2026-09-01T10:00:00.000Z", tokens).grossUsd, 2.7);
+	expect(cacheSavings("claude-sonnet-5", "2026-08-31T18:00:00.000Z", tokens).grossUsd).toBe(1.8);
+	expect(cacheSavings("claude-sonnet-5", "2026-09-01T10:00:00.000Z", tokens).grossUsd).toBe(2.7);
 });

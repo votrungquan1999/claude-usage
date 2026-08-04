@@ -16,9 +16,11 @@ import { join } from "node:path";
  * @param {object} options
  * @param {string} options.home - the user's home directory
  * @param {string} options.repoRoot - where this repo is checked out
+ * @param {string} [options.apiUrl] - base URL to sync to; with `secret`, writes .env for you
+ * @param {string} [options.secret] - the shared secret; omitted leaves any existing .env alone
  * @returns {void}
  */
-export function install({ home, repoRoot }) {
+export function install({ home, repoRoot, apiUrl, secret }) {
 	const claudeDir = join(home, ".claude");
 	mkdirSync(claudeDir, { recursive: true });
 
@@ -27,6 +29,13 @@ export function install({ home, repoRoot }) {
 	const linkPath = join(claudeDir, "claude-usage");
 	rmSync(linkPath, { force: true, recursive: true });
 	symlinkSync(repoRoot, linkPath);
+
+	// Only when both are supplied — a bare re-install must never blank out a working machine's
+	// config, and half a config is worse than none (sync would fail with the key it does have).
+	if (apiUrl && secret) {
+		const envPath = join(linkPath, ".env");
+		writeFileSync(envPath, withSyncConfig(readTextOrEmpty(envPath), { apiUrl, secret }));
+	}
 
 	const settingsPath = resolveSettingsPath(join(claudeDir, "settings.json"));
 	const existing = readSettings(settingsPath);
@@ -54,12 +63,42 @@ function resolveSettingsPath(path) {
 	}
 }
 
+/** A missing .env is the normal first-install case, not an error. */
+function readTextOrEmpty(path) {
+	try {
+		return readFileSync(path, "utf8");
+	} catch {
+		return "";
+	}
+}
+
 function readSettings(path) {
 	try {
 		return { found: true, settings: JSON.parse(readFileSync(path, "utf8")) };
 	} catch {
 		return { found: false, settings: {} };
 	}
+}
+
+/**
+ * Set this tool's two sync keys in a `.env` body, leaving every other key untouched.
+ *
+ * @param {string} envText - the existing .env contents ("" when there is none)
+ * @param {{apiUrl: string, secret: string}} config - the values to set
+ * @returns {string} the new .env contents
+ */
+export function withSyncConfig(envText, config) {
+	const wanted = { CLAUDE_USAGE_API_URL: config.apiUrl, CLAUDE_USAGE_SECRET: config.secret };
+
+	// Drop any prior assignment of the keys we own, then re-add. Appending without removing would
+	// leave the file with the key twice, and which one wins is up to whichever parser reads it.
+	const kept = envText
+		.split("\n")
+		.filter((line) => line.trim() !== "")
+		.filter((line) => !Object.keys(wanted).some((key) => line.startsWith(`${key}=`)));
+
+	const assigned = Object.entries(wanted).map(([key, value]) => `${key}=${value}`);
+	return `${[...kept, ...assigned].join("\n")}\n`;
 }
 
 /**

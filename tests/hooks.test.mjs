@@ -1,10 +1,9 @@
-import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { postEvents, resolveDotEnvPath, syncTail } from "../bin/sync.mjs";
 
@@ -140,17 +139,18 @@ test("posts a mapped aggregate event to the sync endpoint, never leaking raw tra
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(result.sent, 1);
-		assert.equal(received.length, 1);
-		assert.equal(received[0].body.includes(SENTINEL), false, "no raw prose in the request body");
-		assert.equal(received[0].headers["x-claude-usage-secret"], "shh");
+		expect(result.sent).toBe(1);
+		expect(received).toHaveLength(1);
+		expect(received[0].body.includes(SENTINEL), "no raw prose in the request body").toBe(false);
+		expect(received[0].headers["x-claude-usage-secret"]).toBe("shh");
 
 		const posted = JSON.parse(received[0].body);
-		assert.equal(posted.machineId, "machine-abc");
-		assert.equal(posted.events.length, 1);
-		assert.deepEqual(
+		expect(posted.machineId).toBe("machine-abc");
+		expect(posted.events).toHaveLength(1);
+		expect(
 			Object.keys(posted.events[0]).sort(),
-			[
+			"only MappedUsageEvent fields leave this file — the aggregates-only guarantee",
+		).toStrictEqual([
 				"cacheReadTokens",
 				"cacheWrite1hTokens",
 				"cacheWrite5mTokens",
@@ -166,9 +166,7 @@ test("posts a mapped aggregate event to the sync endpoint, never leaking raw tra
 				"requestId",
 				"sessionId",
 				"timestamp",
-			].sort(),
-			"only MappedUsageEvent fields leave this file — the aggregates-only guarantee",
-		);
+			].sort());
 	} finally {
 		server.close();
 	}
@@ -201,9 +199,9 @@ test("posts repoKey when the transcript's cwd is a real git repo, and omits it w
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(result.sent, 1);
+		expect(result.sent).toBe(1);
 		const posted = JSON.parse(received[0].body);
-		assert.match(posted.events[0].repoKey, /^[0-9a-f]{64}$/, "expected a sha256 hex digest");
+		expect(posted.events[0].repoKey, "expected a sha256 hex digest").toMatch(/^[0-9a-f]{64}$/);
 	} finally {
 		server.close();
 	}
@@ -232,8 +230,8 @@ test("two concurrent syncs of the same transcript don't both upload — the uplo
 			syncTail({ transcriptPath: transcript, home, env }),
 		]);
 
-		assert.equal(received.length, 1, "only one of the two concurrent syncs should have uploaded");
-		assert.equal(first.sent + second.sent, 1, "exactly one call reports a send, the other skipped");
+		expect(received, "only one of the two concurrent syncs should have uploaded").toHaveLength(1);
+		expect(first.sent + second.sent, "exactly one call reports a send, the other skipped").toBe(1);
 	} finally {
 		server.close();
 	}
@@ -269,8 +267,8 @@ test("a lock file older than the 30s staleness window is reclaimed, so the sync 
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(result.sent, 1, "a stale lock must be reclaimed, not treated as still-held");
-		assert.equal(received.length, 1);
+		expect(result.sent, "a stale lock must be reclaimed, not treated as still-held").toBe(1);
+		expect(received).toHaveLength(1);
 	} finally {
 		server.close();
 	}
@@ -340,8 +338,8 @@ test("a stale lock reclaimed by several real processes at once is claimed by exa
 		const results = await Promise.all(outputs);
 
 		const uploaders = results.filter((r) => r && JSON.parse(r).sent > 0).length;
-		assert.equal(uploaders, 1, "exactly one of the racing processes should have reclaimed the lock and uploaded");
-		assert.equal(received.length, 1, "only one request should have reached the server");
+		expect(uploaders, "exactly one of the racing processes should have reclaimed the lock and uploaded").toBe(1);
+		expect(received, "only one request should have reached the server").toHaveLength(1);
 	} finally {
 		server.close();
 	}
@@ -374,9 +372,9 @@ test("a fresh lock file (within the 30s staleness window) blocks the sync, makin
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(result.sent, 0, "a fresh lock must not be reclaimed");
-		assert.equal(received.length, 0, "no network call while the lock is held");
-		assert.equal(existsSync(lockPath), true, "syncTail must not delete a lock file it never acquired");
+		expect(result.sent, "a fresh lock must not be reclaimed").toBe(0);
+		expect(received, "no network call while the lock is held").toHaveLength(0);
+		expect(existsSync(lockPath), "syncTail must not delete a lock file it never acquired").toBe(true);
 	} finally {
 		server.close();
 	}
@@ -397,8 +395,8 @@ test("makes no network call when the tail holds no assistant turns yet (first pr
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(result.sent, 0);
-		assert.equal(received.length, 0, "no request should ever have been sent");
+		expect(result.sent).toBe(0);
+		expect(received, "no request should ever have been sent").toHaveLength(0);
 	} finally {
 		server.close();
 	}
@@ -433,11 +431,11 @@ test("the hook exits well before a slow upload finishes, and the upload still co
 		);
 		const hookDuration = Date.now() - start;
 
-		assert.equal(code, 0);
+		expect(code).toBe(0);
 		// Returning in under half the server's delay can only happen if the hook did NOT wait for
 		// the upload — waiting would cost at least DELAY_MS. The threshold is a fraction of
 		// DELAY_MS rather than a fixed number of ms so raising the delay widens the budget with it.
-		assert.ok(hookDuration < DELAY_MS / 2, `hook took ${hookDuration}ms, expected well under ${DELAY_MS / 2}ms`);
+		expect(hookDuration, `hook took ${hookDuration}ms, expected well under ${DELAY_MS / 2}ms`).toBeLessThan(DELAY_MS / 2);
 
 		// Poll for the detached child's own upload to complete — proves stdio:"ignore" +
 		// detached:true actually let it outlive the hook process, not merely that the hook
@@ -451,11 +449,11 @@ test("the hook exits well before a slow upload finishes, and the upload still co
 			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
 
-		assert.equal(received.length, 1, "the detached upload should have completed after the hook exited");
-		assert.ok(
-			received[0].receivedAt >= start + hookDuration,
+		expect(received, "the detached upload should have completed after the hook exited").toHaveLength(1);
+		expect(
+			received[0].receivedAt,
 			"upload was recorded strictly after the hook process had already exited",
-		);
+		).toBeGreaterThanOrEqual(start + hookDuration);
 	} finally {
 		server.close();
 	}
@@ -489,14 +487,14 @@ test("records the live account from ~/.claude.json into the local ledger, and th
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(result.sent, 1);
+		expect(result.sent).toBe(1);
 		const posted = JSON.parse(received[0].body);
-		assert.equal(posted.events[0].accountUuid, "acc-work");
-		assert.equal(posted.events[0].orgUuid, "org-work");
+		expect(posted.events[0].accountUuid).toBe("acc-work");
+		expect(posted.events[0].orgUuid).toBe("org-work");
 
 		const ledgerPath = join(home, ".claude", "claude-usage-state", "accounts.json");
 		const ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
-		assert.equal(ledger["session-4"][0].accountUuid, "acc-work");
+		expect(ledger["session-4"][0].accountUuid).toBe("acc-work");
 	} finally {
 		server.close();
 	}
@@ -532,10 +530,10 @@ test("a session first synced days after it actually ran ships unattributed, neve
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(result.sent, 1);
+		expect(result.sent).toBe(1);
 		const posted = JSON.parse(received[0].body);
-		assert.equal("accountUuid" in posted.events[0], false, "must not guess today's account for a week-old turn");
-		assert.equal("orgUuid" in posted.events[0], false);
+		expect("accountUuid" in posted.events[0], "must not guess today's account for a week-old turn").toBe(false);
+		expect("orgUuid" in posted.events[0]).toBe(false);
 	} finally {
 		server.close();
 	}
@@ -563,10 +561,10 @@ test("hooks/session-start.mjs runs the sync inline, so the upload is already don
 			{ HOME: home, CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		);
 
-		assert.equal(code, 0);
+		expect(code).toBe(0);
 		// Unlike UserPromptSubmit's detach, SessionStart blocks — the upload must already be
 		// recorded by the time the hook process itself has exited.
-		assert.equal(received.length, 1, "the sync must have completed before the hook process exited");
+		expect(received, "the sync must have completed before the hook process exited").toHaveLength(1);
 	} finally {
 		server.close();
 	}
@@ -605,11 +603,11 @@ test("hooks/session-start.mjs sweeps the whole transcript, not just the fixed ta
 			{ HOME: home, CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		);
 
-		assert.equal(code, 0);
-		assert.equal(received.length, 1);
+		expect(code).toBe(0);
+		expect(received).toHaveLength(1);
 		const posted = JSON.parse(received[0].body);
 		const requestIds = posted.events.map((e) => e.requestId).sort();
-		assert.deepEqual(requestIds, ["req_early", "req_late"], "both turns must reach the store, not only the tail one");
+		expect(requestIds, "both turns must reach the store, not only the tail one").toStrictEqual(["req_early", "req_late"]);
 	} finally {
 		server.close();
 	}
@@ -684,18 +682,17 @@ test("syncTail also uploads subagent work, including a subagent launched inside 
 			full: true,
 		});
 
-		assert.equal(result.sent, 3);
+		expect(result.sent).toBe(3);
 		const posted = JSON.parse(received[0].body);
 		const events = posted.events;
-		assert.deepEqual(
+		expect(
 			events.map((e) => e.requestId).sort(),
-			["req_main", "req_sub_a", "req_sub_b"],
 			"main plus both subagent turns must reach the store; journal.jsonl must stay excluded",
-		);
+		).toStrictEqual(["req_main", "req_sub_a", "req_sub_b"]);
 		const subA = events.find((e) => e.requestId === "req_sub_a");
 		const main = events.find((e) => e.requestId === "req_main");
-		assert.equal(subA.isSubagent, true);
-		assert.equal(main.isSubagent, false);
+		expect(subA.isSubagent).toBe(true);
+		expect(main.isSubagent).toBe(false);
 	} finally {
 		server.close();
 	}
@@ -723,7 +720,7 @@ test("a 401 response (wrong/missing secret) is swallowed — sync no-ops without
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "wrong" },
 		});
 
-		assert.equal(result.sent, 0, "a non-ok response must never be treated as a successful send");
+		expect(result.sent, "a non-ok response must never be treated as a successful send").toBe(0);
 	} finally {
 		server.close();
 	}
@@ -751,7 +748,7 @@ test("a 500 response (server/DB failure) is swallowed the same way", async () =>
 			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
 		});
 
-		assert.equal(result.sent, 0);
+		expect(result.sent).toBe(0);
 	} finally {
 		server.close();
 	}
@@ -778,7 +775,7 @@ test("an unreachable server (connection refused) doesn't crash sync", async () =
 		env: { CLAUDE_USAGE_API_URL: "http://127.0.0.1:1", CLAUDE_USAGE_SECRET: "shh" },
 	});
 
-	assert.equal(result.sent, 0);
+	expect(result.sent).toBe(0);
 });
 
 test("missing/incomplete env config skips the network call entirely", async () => {
@@ -807,8 +804,8 @@ test("missing/incomplete env config skips the network call entirely", async () =
 			env: { CLAUDE_USAGE_API_URL: url },
 		});
 
-		assert.equal(result.sent, 0);
-		assert.equal(received.length, 0, "no request should even be attempted without a secret");
+		expect(result.sent).toBe(0);
+		expect(received, "no request should even be attempted without a secret").toHaveLength(0);
 	} finally {
 		server.close();
 	}
@@ -819,7 +816,7 @@ test("resolveDotEnvPath falls back to the repo checkout's own .env when the inst
 	const home = mkdtempSync(join(tmpdir(), "claude-usage-dotenv-home-"));
 	const repoRootEnvPath = join(import.meta.dirname, "..", ".env");
 
-	assert.equal(resolveDotEnvPath(home), repoRootEnvPath);
+	expect(resolveDotEnvPath(home)).toBe(repoRootEnvPath);
 });
 
 test("resolveDotEnvPath prefers the installed ~/.claude/claude-usage/.env over the repo checkout's own when both exist", () => {
@@ -831,13 +828,13 @@ test("resolveDotEnvPath prefers the installed ~/.claude/claude-usage/.env over t
 
 	// The repo checkout's own .env exists too (this repo's real one, gitignored) -- the
 	// installed location must still win.
-	assert.equal(resolveDotEnvPath(home), installedPath);
+	expect(resolveDotEnvPath(home)).toBe(installedPath);
 });
 
 test("the UserPromptSubmit hook exits 0 and writes nothing to stdout even with malformed stdin", async () => {
 	const { code, stdout } = await runHook(USER_PROMPT_SUBMIT_HOOK, "not valid json {{{", {});
-	assert.equal(code, 0);
-	assert.equal(stdout, "");
+	expect(code).toBe(0);
+	expect(stdout).toBe("");
 });
 
 test("postEvents posts to <apiUrl>/api/sync, not to apiUrl itself (R31: CLAUDE_USAGE_API_URL is a base URL)", async () => {
@@ -857,7 +854,7 @@ test("postEvents posts to <apiUrl>/api/sync, not to apiUrl itself (R31: CLAUDE_U
 			events: [{ requestId: "req_1" }],
 		});
 
-		assert.equal(requestedPath, "/api/sync", "the base URL alone must never be the POST target");
+		expect(requestedPath, "the base URL alone must never be the POST target").toBe("/api/sync");
 	} finally {
 		server.close();
 	}
@@ -880,7 +877,7 @@ test("postEvents strips a trailing slash on the base URL instead of producing a 
 			events: [{ requestId: "req_1" }],
 		});
 
-		assert.equal(requestedPath, "/api/sync");
+		expect(requestedPath).toBe("/api/sync");
 	} finally {
 		server.close();
 	}
@@ -903,7 +900,7 @@ test("postEvents does not double-append /api/sync when the base URL already ends
 			events: [{ requestId: "req_1" }],
 		});
 
-		assert.equal(requestedPath, "/api/sync", "must not become /api/sync/api/sync");
+		expect(requestedPath, "must not become /api/sync/api/sync").toBe("/api/sync");
 	} finally {
 		server.close();
 	}
@@ -924,7 +921,7 @@ test("postEvents treats a 200 response that isn't JSON as a failure, not a succe
 			events: [{ requestId: "req_1" }],
 		});
 
-		assert.equal(result.sent, 0, "an HTML 200 must never be reported as a successful send");
+		expect(result.sent, "an HTML 200 must never be reported as a successful send").toBe(0);
 	} finally {
 		server.close();
 	}
@@ -945,7 +942,7 @@ test("postEvents treats valid JSON without an `accepted` field as a failure", as
 			events: [{ requestId: "req_1" }],
 		});
 
-		assert.equal(result.sent, 0, "JSON without the sync route's own shape must not read as success");
+		expect(result.sent, "JSON without the sync route's own shape must not read as success").toBe(0);
 	} finally {
 		server.close();
 	}
@@ -966,7 +963,7 @@ test("postEvents reports sent from the server's accepted count, not from events.
 			events: [{ requestId: "req_1" }, { requestId: "req_2" }, { requestId: "req_3" }],
 		});
 
-		assert.equal(result.sent, 1, "sent must be the server's accepted count, not the client's own events.length");
+		expect(result.sent, "sent must be the server's accepted count, not the client's own events.length").toBe(1);
 	} finally {
 		server.close();
 	}
@@ -987,7 +984,7 @@ test("postEvents surfaces the server's rejected count rather than hiding it (D21
 			events: [{ requestId: "req_1" }, { requestId: "req_2" }, { requestId: "req_3" }],
 		});
 
-		assert.equal(result.rejected, 2, "rejected must be surfaced on the return value, not silently dropped");
+		expect(result.rejected, "rejected must be surfaced on the return value, not silently dropped").toBe(2);
 	} finally {
 		server.close();
 	}

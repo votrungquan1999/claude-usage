@@ -127,23 +127,49 @@ test("a forked session cannot re-stamp who owns an already-synced message", asyn
 	expect(stored?.sessionId).toBe("session-parent");
 });
 
-test("a resync cannot change a message's repoKey once the first sync recorded one", async () => {
-	// D20: repoKey is an ownership field (which repository a message belongs to), not a count —
-	// it must follow D18's first-writer-wins rule exactly like sessionId, or a later resync from
-	// a machine that resolved a different (or no) repoKey could migrate a message's dashboard
-	// grouping after the fact.
+test("a resync re-attributes a message's repository and project, so better attribution reaches rows already stored", async () => {
+	// REVERSES D20's first-writer-wins rule for these two fields. That rule was written when
+	// attribution was resolved once per project DIRECTORY, where a later sync could only be a
+	// DIFFERENT guess, never a better one. Per-turn attribution makes a resync strictly better
+	// informed, and a re-backfill is the only route by which history gets it — under the old rule
+	// every one of the 55,158 stored events would have kept its "no repository" answer forever.
+	//
+	// D18's actual concern is sessionId — a session forked from an earlier one migrating an
+	// inherited message out of its parent's drill-down — and that still never moves.
 	await saveUsageEvents(db, [
-		event({ requestId: "req_repo_key", messageId: "msg_repo_key", repoKey: "hash-a" }),
+		event({ requestId: "req_repo_key", messageId: "msg_repo_key", projectSlug: "git-repos/personal" }),
 	]);
 	await saveUsageEvents(db, [
-		event({ requestId: "req_repo_key", messageId: "msg_repo_key", repoKey: "hash-b" }),
+		event({
+			requestId: "req_repo_key",
+			messageId: "msg_repo_key",
+			projectSlug: "personal/quant-trading",
+			repoKey: "hash-quant",
+		}),
 	]);
 
 	const stored = await db
 		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
 		.findOne({ requestId: "req_repo_key", messageId: "msg_repo_key" });
 
-	expect(stored?.repoKey).toBe("hash-a");
+	expect(stored?.projectSlug).toBe("personal/quant-trading");
+	expect(stored?.repoKey).toBe("hash-quant");
+});
+
+test("a resync that resolved NO repository leaves a recorded repoKey alone, rather than erasing it", async () => {
+	// The machine that owns a repository can resolve it; another that has never checked it out
+	// cannot. Re-attribution must be able to improve an answer without a less-informed sync being
+	// able to blank one — same conditional-spread rule sessionTitle follows.
+	await saveUsageEvents(db, [
+		event({ requestId: "req_repo_keep", messageId: "msg_repo_keep", repoKey: "hash-known" }),
+	]);
+	await saveUsageEvents(db, [event({ requestId: "req_repo_keep", messageId: "msg_repo_keep" })]);
+
+	const stored = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.findOne({ requestId: "req_repo_keep", messageId: "msg_repo_keep" });
+
+	expect(stored?.repoKey).toBe("hash-known");
 });
 
 test("a corrected resync can demote priced back to false", async () => {

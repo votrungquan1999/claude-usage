@@ -5,9 +5,11 @@ import {
 	assignSeriesColorSlots,
 	dayKeyInTimezone,
 	emptyModelMixRow,
-	fillMissingDays,
+	fillMissingBuckets,
 	modelMixByDay,
+	planDayBuckets,
 	rankDimensionTotals,
+	relabelRowsToBuckets,
 } from "../dashboard-format";
 import { loadDailyEfficiencyByModel, loadDimensionDomain } from "../dashboard-loaders";
 import { ModelMixChart } from "./model-mix-chart";
@@ -52,7 +54,11 @@ export async function ModelMixView({
 
 	const firstDay = dayKeyInTimezone(new Date(fromMs), DASHBOARD_TIMEZONE);
 	const lastDay = dayKeyInTimezone(new Date(toMs), DASHBOARD_TIMEZONE);
-	const mix = fillMissingDays(modelMixByDay(rows, topModels), firstDay, lastDay, emptyModelMixRow);
+	// Relabelled BEFORE `modelMixByDay`, never after: a bucket's mix is the share of its SUMMED
+	// spend, and combining the daily percentages instead would be wrong in a way that looks
+	// entirely plausible on screen (D7).
+	const buckets = planDayBuckets(firstDay, lastDay);
+	const mix = fillMissingBuckets(modelMixByDay(relabelRowsToBuckets(rows, buckets), topModels), buckets, emptyModelMixRow);
 
 	return <ModelMixChart rows={mix} seriesKeys={topModels} colors={assignSeriesColorSlots(topModels, domainOrder)} />;
 }

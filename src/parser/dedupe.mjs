@@ -7,6 +7,9 @@
  * @property {string} model    - raw model string, may carry a `[1m]` suffix
  * @property {string} timestamp
  * @property {object} usage    - the raw `message.usage` block
+ * @property {string} [cwd]    - the directory this turn ran in, as Claude Code recorded it
+ * @property {string[]} filePaths - absolute paths this turn's tool calls read or wrote; the
+ *   signal that attributes a turn to a repository when `cwd` is a parent directory holding many
  */
 
 /**
@@ -40,8 +43,35 @@ export function dedupeAssistantTurns(records) {
 			model: record.message.model,
 			timestamp: record.timestamp,
 			usage,
+			cwd: record.cwd,
+			filePaths: toolFilePaths(record.message.content),
 		});
 	}
 
 	return [...best.values()];
+}
+
+/** Tool inputs naming a single file. Deliberately excludes Glob/Grep's `path`, which names a
+ * search root rather than a file touched — usually the very parent directory this is meant to
+ * see past. */
+const FILE_PATH_INPUTS = ["file_path", "notebook_path"];
+
+/**
+ * The absolute paths one assistant message's tool calls read or wrote, in the order issued.
+ *
+ * @param {unknown} content - the message's `content`, which is a string on a plain text reply
+ * @returns {string[]} paths, possibly empty
+ */
+function toolFilePaths(content) {
+	if (!Array.isArray(content)) return [];
+
+	const paths = [];
+	for (const block of content) {
+		if (block?.type !== "tool_use") continue;
+		const input = block.input ?? {};
+		for (const field of FILE_PATH_INPUTS) {
+			if (typeof input[field] === "string") paths.push(input[field]);
+		}
+	}
+	return paths;
 }

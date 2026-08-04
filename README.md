@@ -13,33 +13,38 @@ Claude Code bills context as a **recurring** cost — every turn re-reads the wh
 
 ## Status
 
-All three phases are built and tested — 155 tests across two runners. Local readout (status line,
-report, installer, skill), cross-machine sync (mapper, `POST /api/sync`, both hooks, backfill), and
-the dashboard (aggregation layer, views, auth).
+All three phases are built and tested — 235 tests under vitest plus 12 Playwright e2e tests. Local
+readout (status line, report, installer, skill), cross-machine sync (mapper, `POST /api/sync`, both
+hooks, backfill), and the dashboard (aggregation layer, views, auth).
 
-**Not yet run in production.** Nothing is deployed, no real Atlas connection has been made, backfill
-has never posted to the hosted API, and `scripts/install.mjs` has not been run on this machine. The
-database is provisioned by an open PR against `personal-infra`, not by a merge.
+**Live** at <https://claude-usage.quanvo.dev>, gated by the shared secret.
 
 Behaviour and the invariants that must not be broken are documented in
 [docs/features/claude-usage-sync-dashboard/spec.md](docs/features/claude-usage-sync-dashboard/spec.md).
 
 ## Install
 
+A new machine is one command. Nothing to hand-edit:
+
 ```sh
 git clone https://github.com/votrungquan1999/claude-usage.git
-cd claude-usage && node scripts/install.mjs
+cd claude-usage && node scripts/install.mjs \
+  --api-url https://claude-usage.quanvo.dev \
+  --secret <shared secret>
 ```
 
-Symlinks the clone to `~/.claude/claude-usage` and patches `~/.claude/settings.json` — wiring in
-the status line and the two sync hooks (`UserPromptSubmit`, `SessionStart`). Update with `git pull`
-— there is no build step.
+Symlinks the clone to `~/.claude/claude-usage`, patches `~/.claude/settings.json` — wiring in the
+status line and the two sync hooks (`UserPromptSubmit`, `SessionStart`) — and writes
+`~/.claude/claude-usage/.env` for you. Re-running is safe: unrelated keys in an existing `.env`
+survive, and the secret is never echoed to the terminal. Update with `git pull`; there is no build
+step.
 
-To turn sync on, copy `.env.example` to `~/.claude/claude-usage/.env` (or, running straight from
-a clone with no installer symlink yet, to the repo root's own `.env` — that path is checked as a
-fallback) and fill in `CLAUDE_USAGE_API_URL` and `CLAUDE_USAGE_SECRET` (`CLAUDE_USAGE_MACHINE_LABEL`
-is optional — a missing label just shows the raw machine id on the dashboard instead of a name).
-Without either `.env`, the status line and report still work; the hooks silently skip syncing.
+Both flags are optional. Run `node scripts/install.mjs` bare to install without turning sync on —
+the status line and report still work, and the hooks silently skip uploading. It then prints the
+command for configuring sync later, including how to read the deployed secret out of Pulumi.
+
+`CLAUDE_USAGE_MACHINE_LABEL` appears in `.env.example` but is **not implemented** — nothing reads
+it, so the dashboard shows the raw machine id whether it is set or not.
 
 `CLAUDE_USAGE_API_URL` is the deployed app's **base URL** (e.g. `https://usage.example.com`), not
 the sync endpoint itself — the uploader appends `/api/sync` (once; a base already ending in it, or

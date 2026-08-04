@@ -58,6 +58,13 @@ function findCwdSlug(projectDir) {
 	return null;
 }
 
-function lastTwoSegments(cwd) {
+/**
+ * The `<parent>/<name>` identity of a directory path — the two-segment form (D5) that names a
+ * project without carrying employer or org directory names off the machine.
+ *
+ * @param {string} cwd - absolute path
+ * @returns {string}
+ */
+export function lastTwoSegments(cwd) {
 	return cwd.split("/").filter(Boolean).slice(-2).join("/");
 }

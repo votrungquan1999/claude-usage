@@ -5,7 +5,11 @@ import { getDatabase } from "@/server/database";
 import { ensureUsageIndexes, saveUsageEvents, type UsageEventDocument } from "@/server/usage-store";
 
 const REQUIRED_STRING_FIELDS = ["requestId", "messageId", "sessionId", "projectSlug", "model"] as const;
-const OPTIONAL_STRING_FIELDS = ["repoKey", "accountUuid", "orgUuid"] as const;
+// `sessionTitle` is the one CONTENT-derived field this API accepts — Claude Code's own name for
+// the session, admitted deliberately so the dashboard's session list is readable. Everything else
+// here is an id. Raw prompt text (`lastPrompt`) lives in the same transcripts and must never join
+// this list; the allowlist is what keeps that decision explicit rather than incidental.
+const OPTIONAL_STRING_FIELDS = ["repoKey", "accountUuid", "orgUuid", "sessionTitle"] as const;
 const REQUIRED_NUMBER_FIELDS = [
 	"inputTokens",
 	"cacheReadTokens",
@@ -112,6 +116,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 		if (source.repoKey !== undefined) document.repoKey = source.repoKey;
 		if (source.accountUuid !== undefined) document.accountUuid = source.accountUuid;
 		if (source.orgUuid !== undefined) document.orgUuid = source.orgUuid;
+		// Absent when the transcript carried no title, or when a tail read did not reach the
+		// `ai-title` record — copying it as undefined would erase a title already stored.
+		if (source.sessionTitle !== undefined) document.sessionTitle = source.sessionTitle;
 		return document;
 	});
 

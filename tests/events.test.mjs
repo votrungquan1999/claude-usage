@@ -1,8 +1,49 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { dedupeAssistantTurns } from "../src/parser/dedupe.mjs";
-import { mapTurnToEvent } from "../src/parser/events.mjs";
+import { mapTurnToEvent, resolveSessionTitle } from "../src/parser/events.mjs";
+
+test("a session title given to the mapper rides on the event; without one the field is absent entirely", () => {
+	const [turn] = dedupeAssistantTurns([
+		{
+			type: "assistant",
+			requestId: "req_1",
+			messageId: "msg_1",
+			sessionId: "session-1",
+			isSidechain: false,
+			model: "claude-opus-5",
+			timestamp: "2026-08-01T10:00:00.000Z",
+			message: { usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } },
+		},
+	]);
+	const context = { projectSlug: "personal/claude-usage", machineId: "machine-a", accountLedger: [] };
+
+	const named = mapTurnToEvent(turn, { ...context, sessionTitle: "Migrate the test runner" });
+	expect(named.sessionTitle).toBe("Migrate the test runner");
+
+	// Absent, NOT present-and-undefined: the store spreads unlisted fields into $set, so an
+	// undefined value here would overwrite a title an earlier sync had already recorded. Tail
+	// reads routinely miss the ai-title record, so this is the common case, not an edge one.
+	const unnamed = mapTurnToEvent(turn, context);
+	expect(Object.hasOwn(unnamed, "sessionTitle"), "an absent title must not become a null field").toBe(false);
+});
+
+test("the session title is the LAST ai-title record, since Claude Code rewrites it as the session develops", () => {
+	const title = resolveSessionTitle([
+		{ type: "assistant", requestId: "req_1" },
+		{ type: "ai-title", aiTitle: "Investigate flaky test" },
+		{ type: "user" },
+		{ type: "ai-title", aiTitle: "Migrate the test runner" },
+	]);
+
+	expect(title).toBe("Migrate the test runner");
+});
+
+test("a transcript with no ai-title record yields no title, rather than an empty string", () => {
+	// Absent, not "" — the mapper spreads the field in only when defined, and an empty string
+	// would be spread in and then rendered as a blank name column.
+	expect(resolveSessionTitle([{ type: "assistant", requestId: "req_1" }])).toBe(undefined);
+});
 
 test("maps a normal turn to a storable usage event with project, machine and time, leaving the account unattributed when the session predates the ledger", () => {
 	// Every one of the 201 real sessions today predates the account ledger — this is the
@@ -33,7 +74,7 @@ test("maps a normal turn to a storable usage event with project, machine and tim
 		accountLedger: {},
 	});
 
-	assert.deepEqual(event, {
+	expect(event).toStrictEqual({
 		requestId: "req_1",
 		messageId: "msg_1",
 		sessionId: "sess_1",
@@ -98,8 +139,8 @@ test("skips <synthetic> placeholder turns and requestId-less turns, but still ma
 	const context = { projectSlug: "personal/claude-usage", machineId: "machine-abc", accountLedger: {} };
 	const events = turns.map((turn) => mapTurnToEvent(turn, context)).filter((event) => event !== null);
 
-	assert.equal(events.length, 1);
-	assert.equal(events[0].messageId, "msg_real");
+	expect(events).toHaveLength(1);
+	expect(events[0].messageId).toBe("msg_real");
 });
 
 test("reports priced:false and $0 cost for a real (non-synthetic) model with no known price", () => {
@@ -126,8 +167,8 @@ test("reports priced:false and $0 cost for a real (non-synthetic) model with no 
 		accountLedger: {},
 	});
 
-	assert.equal(event.priced, false);
-	assert.equal(event.costUsd, 0);
+	expect(event.priced).toBe(false);
+	expect(event.costUsd).toBe(0);
 });
 
 test("reports priced:false when the timestamp is missing, even for a model with a known price", () => {
@@ -154,7 +195,7 @@ test("reports priced:false when the timestamp is missing, even for a model with 
 		accountLedger: {},
 	});
 
-	assert.equal(event.priced, false);
+	expect(event.priced).toBe(false);
 });
 
 test("emits exactly the allowed 17-key set, plus accountUuid/orgUuid, when the session's account is known in the ledger", () => {
@@ -177,6 +218,9 @@ test("emits exactly the allowed 17-key set, plus accountUuid/orgUuid, when the s
 		projectSlug: "personal/claude-usage",
 		machineId: "machine-abc",
 		repoKey: "9f8e7d6c5b4a",
+		// Supplied so the allowlist below actually exercises the widened field. Without it the
+		// title is absent and this test would keep passing while saying nothing about it.
+		sessionTitle: "Migrate the test runner",
 		accountLedger: {
 			sess_attributed: [{ from: "2026-07-01T00:00:00.000Z", accountUuid: "account-work", orgUuid: "org-work" }],
 		},
@@ -201,11 +245,15 @@ test("emits exactly the allowed 17-key set, plus accountUuid/orgUuid, when the s
 		"costUsd",
 		"priced",
 		"isSubagent",
+		// The ONE conversation-derived field this system uploads, added deliberately so the
+		// dashboard's session list is readable. Everything else above is a count, an id or a time.
+		// `lastPrompt` lives in the same transcripts and must never join this list.
+		"sessionTitle",
 	];
 
-	assert.deepEqual(Object.keys(event).sort(), EXPECTED_KEYS.sort());
-	assert.equal(event.accountUuid, "account-work");
-	assert.equal(event.orgUuid, "org-work");
+	expect(Object.keys(event).sort()).toStrictEqual(EXPECTED_KEYS.sort());
+	expect(event.accountUuid).toBe("account-work");
+	expect(event.orgUuid).toBe("org-work");
 });
 
 test("emits exactly the allowed key set and no transcript content, even from a hostile-fixture record", () => {
@@ -268,9 +316,9 @@ test("emits exactly the allowed key set and no transcript content, even from a h
 		"isSubagent",
 	];
 
-	assert.deepEqual(Object.keys(event).sort(), EXPECTED_KEYS.sort());
+	expect(Object.keys(event).sort()).toStrictEqual(EXPECTED_KEYS.sort());
 	const serialized = JSON.stringify(event);
-	assert.equal(serialized.includes(SENTINEL), false);
-	assert.equal(serialized.includes("debugPrompt"), false);
-	assert.equal(serialized.includes("rawTranscriptExcerpt"), false);
+	expect(serialized.includes(SENTINEL)).toBe(false);
+	expect(serialized.includes("debugPrompt")).toBe(false);
+	expect(serialized.includes("rawTranscriptExcerpt")).toBe(false);
 });

@@ -88,6 +88,7 @@ export async function SessionList({
 			<Table>
 				<TableHeader>
 					<TableRow>
+						<TableHead>Session</TableHead>
 						<TableHead>Project</TableHead>
 						<TableHead>Machine</TableHead>
 						<TableHead>Models</TableHead>
@@ -100,8 +101,15 @@ export async function SessionList({
 					{page.rows.map((row) => (
 						<TableRow key={row.sessionId}>
 							<TableCell>
-								<SessionLink href={sessionHref(row.sessionId)}>{row.projectSlug}</SessionLink>
+								{/* The link carries the NAME, because that is what tells two rows apart —
+								    project and machine repeat across dozens of them. Sessions synced before
+								    titles were captured fall back to a short id, which is at least unique,
+								    until a backfill re-run names them. */}
+								<SessionLink href={sessionHref(row.sessionId)}>
+									{row.sessionTitle ?? row.sessionId.slice(0, 8)}
+								</SessionLink>
 							</TableCell>
+							<TableCell>{row.projectSlug}</TableCell>
 							<TableCell>{row.machineId}</TableCell>
 							<TableCell>{row.models.join(", ")}</TableCell>
 							<TableCell>{formatInstantInTimezone(row.startedAt, DASHBOARD_TIMEZONE)}</TableCell>

@@ -1,5 +1,4 @@
-import assert from "node:assert/strict";
-import { test } from "node:test";
+import { expect, test } from "vitest";
 
 import { buildReport } from "../src/report.mjs";
 
@@ -31,9 +30,9 @@ test("splits session spend by model so a cheap model's share is visible", () => 
 		0,
 	);
 
-	assert.equal(report.turnCount, 3);
-	assert.equal(report.sessionTotal.toFixed(3), "0.060");
-	assert.deepEqual(report.byModel, [
+	expect(report.turnCount).toBe(3);
+	expect(report.sessionTotal.toFixed(3)).toBe("0.060");
+	expect(report.byModel).toStrictEqual([
 		{ model: "claude-opus-5", turns: 2, cost: 0.05 },
 		{ model: "claude-sonnet-5", turns: 1, cost: 0.01 },
 	]);
