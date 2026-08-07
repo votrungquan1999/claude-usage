@@ -95,7 +95,14 @@ This mongod already carries ~300 orphaned `ai-rules-e2e-<timestamp>` and `lms-te
 
 Not `insertMany`. Taking the same path as the sync endpoint means the fixture cannot drift from the real document shape.
 
-Its costs are multiples of `$0.25` — exact in binary — so the total is exactly `$116.25` and assertions can be literal strings rather than tolerances. Days are counted from the **UTC+7 calendar date**, not UTC: counting in UTC is correct only until 17:00 UTC, after which it is already tomorrow in Ho Chi Minh and every window assertion shifts by a day.
+Its costs are multiples of `$0.25` — exact in binary — so the total is exactly `$116.25` and assertions can be literal strings rather than tolerances.
+
+**Every event sits a whole number of days before `now`.** No offset arithmetic and no fixed clock time, which makes it right in every timezone at once. Both halves are load-bearing, and the second was learned the hard way:
+
+- Counting days in **UTC** is correct only until 17:00 UTC, after which it is already tomorrow in Ho Chi Minh and every window assertion shifts by a day. That is why the fixture originally shifted into UTC+7 before reading date components.
+- Placing them at a **fixed hour** — 03:00 UTC, chosen as safely mid-morning local — put day-zero events in the FUTURE for the first three hours of every UTC day. The dashboard clamps every window to `[earliest, now]`, so three sessions silently fell outside it and **7 of 15 e2e tests failed between 00:00 and 03:00 UTC**, on a fixture whose figures are asserted as exact literals. Discovered at 02:32 UTC by a run that was expected to be green.
+
+Subtracting whole days from `now` itself avoids both: day zero lands on `now`, always in the past by the time a page loads, and day *n* lands on the same clock time *n* days earlier, which is the same calendar date in every zone.
 
 ### Assert figures, not "something changed"
 
@@ -161,10 +168,28 @@ Two things follow:
 - **Client-side fixes to attribution are inert until the server ships.** The parser computes the answer; the upsert decides whether it is allowed to land. Deploy the store change *before* running a corrective backfill, not after.
 - **Verify against the store, not the summary.** Count documents and group by the field you expected to change. The one number that made this visible was `distinct projectSlug` — 7 before, 18 after, when the dry run predicted ~19 with a completely different distribution.
 
+### Confirming the deploy is live, before spending a backfill on it
+
+Double-send one probe event with a different `projectSlug` each time, then read the stored value:
+
+```sh
+# same requestId/messageId twice, projectSlug "probe/before" then "probe/after"
+mongosh "$URI" --quiet --eval \
+  'const d = db.usage_events.findOne({requestId:"deploy_probe_1"}); print(d && d.projectSlug)'
+```
+
+`probe/after` means the `$set` upsert is live; `probe/before` means the deployed build still has the field in `$setOnInsert`. Delete the probe afterwards. Two seconds, one throwaway document, and it is the only check that distinguishes "deployed" from "pushed" — a corrective backfill against a stale build costs ten minutes and reports complete success.
+
 ## Known coverage gap
 
 Inverting the dedupe comparison in `src/parser/dedupe.mjs` fails exactly **one** test. No other fixture contains streaming duplicates, so nothing else exercises it. Pre-existing; recorded here because a single-test guard on the max-`output_tokens` rule is thinner than it looks.
 
 ## Where the reasoning lives
 
-Decisions and the injection results are on AI-Kanban card #142, and in `tmp/claude-usage-test-runner/` (`PLAN.md`, `IMPLEMENTATION_PROGRESS.md`) while that workspace survives.
+Decisions and the injection results are on AI-Kanban cards **#142** (test runner and e2e) and **#143** (session titles, machine setup, chart bucketing, per-turn attribution). Several entries on #143 are marked outdated and superseded — read the supersession chain, not just the first match, because two decisions there still read "NOT YET BUILT" and are wrong.
+
+The same material, plus what the cards do not carry, is in `tmp/claude-usage-test-runner/` while that workspace survives:
+
+- `DECISIONS.md` — each choice with the alternative it beat, which the code never records
+- `JOURNAL.md` — findings, open questions, and the commands that took several attempts
+- `IMPLEMENTATION_PROGRESS.md`, `PLAN.md` — what was built, in what order

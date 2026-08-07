@@ -32,33 +32,29 @@ export const MODELS = ["claude-opus-5", "claude-sonnet-5"];
  * `(unattributed)` bucket that the other two collapse into. */
 const REPO_KEY = "e2e00000000000000000000000000000000000000000000000000000000beef";
 
-/** The dashboard buckets days in UTC+7, so the fixture must count days in UTC+7 too. */
-const DASHBOARD_UTC_OFFSET_HOURS = 7;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
  * Builds the corpus relative to a supplied "now".
  *
- * Days are counted back from the dashboard's LOCAL calendar date, not from the UTC one. Counting
- * in UTC would be correct only part of the day: seeded after 17:00 UTC it is already tomorrow in
- * UTC+7, so every event would land one local day earlier than intended and every window assertion
- * would shift. That is a test which passes all morning and fails in the evening.
+ * Each event sits a whole number of days BEFORE `now`, which puts it on the right calendar date in
+ * every timezone at once — no offset arithmetic, and nothing near a boundary where the UTC day and
+ * the dashboard's UTC+7 day disagree about which date an event belongs to.
  *
- * Each event lands at 03:00 UTC = 10:00 local — mid-morning, so it is never near a boundary where
- * the UTC day and the local day disagree about which date it belongs to.
+ * The day-zero events land on `now` itself rather than at a fixed hour, and that is the point: a
+ * fixed clock time is in the FUTURE for part of every day, and the dashboard clamps every window
+ * to `[earliest, now]`. Seeding today at 03:00 UTC made the whole suite fail between 00:00 and
+ * 03:00 UTC — three sessions silently outside the window, on a fixture whose figures are asserted
+ * as exact literals.
  *
  * @param now - the instant the window is measured back from
  */
 export function buildCorpus(now: Date): UsageEventDocument[] {
 	const events: UsageEventDocument[] = [];
 
-	// Shift into UTC+7 so the UTC date components below ARE the dashboard's calendar date.
-	const local = new Date(now.getTime() + DASHBOARD_UTC_OFFSET_HOURS * 60 * 60 * 1000);
-
 	for (let n = 1; n <= SESSION_COUNT; n++) {
 		const daysAgo = (n - 1) % DAY_SPAN;
-		const day = new Date(
-			Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() - daysAgo, 3, 0, 0),
-		);
+		const day = new Date(now.getTime() - daysAgo * MILLISECONDS_PER_DAY);
 
 		const projectIndex = (n - 1) % PROJECT_SLUGS.length;
 		const sessionId = `e2e-session-${String(n).padStart(2, "0")}`;
