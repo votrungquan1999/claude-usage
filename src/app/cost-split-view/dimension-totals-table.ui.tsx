@@ -5,7 +5,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 import { formatLowerBoundCost, type DimensionTotal } from "../dashboard-format";
 
-import type { SeriesColorMap } from "./cost-split-view.type";
+import { useSplitValueLinks } from "./cost-split-view.state";
+import type { SeriesColorMap, SplitTab } from "./cost-split-view.type";
 
 export interface DimensionTotalsTableDisplayProps {
 	totals: DimensionTotal[];
@@ -13,6 +14,8 @@ export interface DimensionTotalsTableDisplayProps {
 	/** Every row's colour swatch (D10/D21) — a row folded into the chart's "Other" bucket resolves
 	 * to `var(--chart-other)` here, same as the bar it's part of. */
 	colors: SeriesColorMap;
+	/** Which split these rows came from, so each name can link to its own drill-down. */
+	tab: SplitTab;
 }
 
 /**
@@ -25,7 +28,10 @@ export function DimensionTotalsTableDisplay({
 	totals,
 	dimensionLabel,
 	colors,
+	tab,
 }: DimensionTotalsTableDisplayProps): React.JSX.Element {
+	const { hrefForValue } = useSplitValueLinks(tab);
+
 	if (totals.length === 0) {
 		return <p className="py-6 text-center text-sm text-muted-foreground">No data in this range</p>;
 	}
@@ -52,7 +58,14 @@ export function DimensionTotalsTableDisplay({
 								style={{ backgroundColor: colors[total.dimensionValue] }}
 							/>
 						</TableCell>
-						<TableCell>{total.dimensionValue}</TableCell>
+						<TableCell>
+							<a
+								href={hrefForValue(total.dimensionValue)}
+								className="font-medium text-foreground underline-offset-4 hover:underline"
+							>
+								{total.dimensionValue}
+							</a>
+						</TableCell>
 						<TableCell className="text-right">
 							{formatLowerBoundCost(total.costUsd, total.unpricedEventCount)}
 							{total.unpricedEventCount > 0 && (

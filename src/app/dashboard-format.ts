@@ -439,6 +439,21 @@ export interface DashboardView {
 }
 
 /**
+ * Next's resolved search params as a `URLSearchParams`. A repeated key arrives as an array and is
+ * dropped rather than joined — a joined value would be a string nothing in the allowlist matches,
+ * which is the same outcome by a less obvious route.
+ *
+ * @param resolved - the awaited `searchParams`
+ */
+export function readSearchParams(resolved: Record<string, string | string[] | undefined>): URLSearchParams {
+	const params = new URLSearchParams();
+	for (const [key, value] of Object.entries(resolved)) {
+		if (typeof value === "string") params.set(key, value);
+	}
+	return params;
+}
+
+/**
  * Reads the dashboard's view state out of the URL (D7). Takes `now` and the corpus's earliest
  * event as parameters rather than reaching for `new Date()` or a query, so every rule below is
  * testable. Unrecognised values fall back to the default rather than reaching a query (D30/D37),

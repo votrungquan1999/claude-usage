@@ -41,16 +41,31 @@ export function CostSplits({ initialTab, fromMs, toMs, domainFromMs, domainToMs 
 						<TabsTrigger value={SplitTab.Repo}>Repo</TabsTrigger>
 					</TabsList>
 					<TabsContent value={SplitTab.Machine}>
-						<SplitPanel dimension={CostSplitDimension.Machine} dimensionLabel="Machine" {...viewWindow} />
+						<SplitPanel
+							dimension={CostSplitDimension.Machine}
+							dimensionLabel="Machine"
+							tab={SplitTab.Machine}
+							{...viewWindow}
+						/>
 					</TabsContent>
 					<TabsContent value={SplitTab.Project}>
-						<SplitPanel dimension={CostSplitDimension.Project} dimensionLabel="Project" {...viewWindow} />
+						<SplitPanel
+							dimension={CostSplitDimension.Project}
+							dimensionLabel="Project"
+							tab={SplitTab.Project}
+							{...viewWindow}
+						/>
 					</TabsContent>
 					<TabsContent value={SplitTab.Model}>
-						<SplitPanel dimension={CostSplitDimension.Model} dimensionLabel="Model" {...viewWindow} />
+						<SplitPanel dimension={CostSplitDimension.Model} dimensionLabel="Model" tab={SplitTab.Model} {...viewWindow} />
 					</TabsContent>
 					<TabsContent value={SplitTab.Repo}>
-						<SplitPanel dimension={CostSplitDimension.Repo} dimensionLabel="Repository" {...viewWindow} />
+						<SplitPanel
+							dimension={CostSplitDimension.Repo}
+							dimensionLabel="Repository"
+							tab={SplitTab.Repo}
+							{...viewWindow}
+						/>
 					</TabsContent>
 				</SplitTabs>
 			</CardContent>
@@ -61,6 +76,7 @@ export function CostSplits({ initialTab, fromMs, toMs, domainFromMs, domainToMs 
 interface SplitPanelProps {
 	dimension: CostSplitDimension;
 	dimensionLabel: string;
+	tab: SplitTab;
 	fromMs: number;
 	toMs: number;
 	domainFromMs: number;
@@ -72,11 +88,11 @@ interface SplitPanelProps {
  * and its own suspense boundary so the three splits stream independently. The error boundary sits
  * OUTSIDE the suspense boundary — a query that rejects throws during the suspended render.
  */
-function SplitPanel({ dimension, dimensionLabel, ...viewWindow }: SplitPanelProps): React.JSX.Element {
+function SplitPanel({ dimension, dimensionLabel, tab, ...viewWindow }: SplitPanelProps): React.JSX.Element {
 	return (
 		<CardErrorBoundary fallback={<CardErrorNotice>This split could not be loaded</CardErrorNotice>}>
 			<Suspense fallback={<CardPlaceholder />}>
-				<CostSplitView dimension={dimension} dimensionLabel={dimensionLabel} {...viewWindow} />
+				<CostSplitView dimension={dimension} dimensionLabel={dimensionLabel} tab={tab} {...viewWindow} />
 			</Suspense>
 		</CardErrorBoundary>
 	);

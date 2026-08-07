@@ -13,7 +13,7 @@ import {
 } from "../dashboard-format";
 import { loadCostPerDay, loadDimensionDomain } from "../dashboard-loaders";
 import { CostChart } from "./cost-chart";
-import type { SeriesColorMap } from "./cost-split-view.type";
+import type { SeriesColorMap, SplitTab } from "./cost-split-view.type";
 import { CostSplitLayout, UnpricedRangeNotice } from "./cost-split-view.ui";
 import { DimensionTotalsTable } from "./dimension-totals-table";
 
@@ -36,6 +36,8 @@ const OTHER_COLOR = "var(--chart-other)";
 export interface CostSplitViewProps {
 	dimension: CostSplitDimension;
 	dimensionLabel: string;
+	/** The URL's name for this split, for the per-row drill-down links. */
+	tab: SplitTab;
 	/** Selected window, epoch milliseconds. Primitives, not a `DateRange`: the shared loaders
 	 * memoise on argument identity, and an object rebuilt per card silently re-runs the query. */
 	fromMs: number;
@@ -56,6 +58,7 @@ export interface CostSplitViewProps {
 export async function CostSplitView({
 	dimension,
 	dimensionLabel,
+	tab,
 	fromMs,
 	toMs,
 	domainFromMs,
@@ -98,7 +101,7 @@ export async function CostSplitView({
 		<CostSplitLayout>
 			{unpricedMessage !== null && <UnpricedRangeNotice>{unpricedMessage}</UnpricedRangeNotice>}
 			<CostChart data={chartData} seriesKeys={topValues} colors={seriesColors} />
-			<DimensionTotalsTable totals={totals} dimensionLabel={dimensionLabel} colors={tableColors} />
+			<DimensionTotalsTable totals={totals} dimensionLabel={dimensionLabel} colors={tableColors} tab={tab} />
 		</CostSplitLayout>
 	);
 }

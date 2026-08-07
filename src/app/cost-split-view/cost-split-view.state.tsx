@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 
-import { dashboardHref } from "../href";
+import { dashboardHref, splitValueHref } from "../href";
 import type { SplitTab } from "./cost-split-view.type";
 
 export interface SplitTabNavigation {
@@ -31,4 +31,22 @@ export function useSplitTabNavigation(): SplitTabNavigation {
 	}
 
 	return { selectTab };
+}
+
+export interface SplitValueLinks {
+	/** A dimension value's drill-down URL. Built here rather than passed in: a function cannot
+	 * cross the server/client boundary as a prop, and the window it carries lives in the URL. */
+	hrefForValue: (value: string) => string;
+}
+
+/**
+ * Links each totals row to its drill-down page, carrying the window currently on screen — the row
+ * reports a WINDOW figure, so a page showing other days would contradict the number clicked.
+ *
+ * @param tab - which split the rows were read from
+ */
+export function useSplitValueLinks(tab: SplitTab): SplitValueLinks {
+	const searchParams = useSearchParams();
+
+	return { hrefForValue: (value: string) => splitValueHref(searchParams, tab, value) };
 }

@@ -57,14 +57,15 @@ export interface DashboardCustomRange {
 }
 
 /**
- * Builds a dashboard link from the current parameters plus the one thing that changed. Unrelated
- * parameters are carried through untouched, and a value equal to its default is REMOVED rather
- * than written, so the default view has a clean shareable URL and `?preset=30d` never accumulates.
+ * The dashboard's link rules applied to any path. A drill-down pages through its OWN session list,
+ * so its pager has to stay on its own URL — links built against the dashboard root would send page
+ * 2 somewhere the page number means something else entirely.
  *
+ * @param pathname - the path the link stays on
  * @param current - the parameters the page is being viewed with
  * @param changes - the parameters this link sets; omitted keys keep their current value
  */
-export function dashboardHref(current: URLSearchParams, changes: DashboardHrefChanges): string {
+export function pathHref(pathname: string, current: URLSearchParams, changes: DashboardHrefChanges): string {
 	const next = new URLSearchParams(current);
 
 	// A window comes from a preset OR from explicit dates, never both — writing one clears the
@@ -91,7 +92,19 @@ export function dashboardHref(current: URLSearchParams, changes: DashboardHrefCh
 	if (changes.tab !== undefined) setOrClearDefault(next, SPLIT_TAB_PARAM, changes.tab, DEFAULT_SPLIT_TAB);
 
 	const query = next.toString();
-	return query === "" ? DASHBOARD_PATH : `${DASHBOARD_PATH}?${query}`;
+	return query === "" ? pathname : `${pathname}?${query}`;
+}
+
+/**
+ * Builds a dashboard link from the current parameters plus the one thing that changed. Unrelated
+ * parameters are carried through untouched, and a value equal to its default is REMOVED rather
+ * than written, so the default view has a clean shareable URL and `?preset=30d` never accumulates.
+ *
+ * @param current - the parameters the page is being viewed with
+ * @param changes - the parameters this link sets; omitted keys keep their current value
+ */
+export function dashboardHref(current: URLSearchParams, changes: DashboardHrefChanges): string {
+	return pathHref(DASHBOARD_PATH, current, changes);
 }
 
 /**
@@ -124,4 +137,32 @@ const DASHBOARD_PATH = "/";
  */
 export function sessionHref(sessionId: string): string {
 	return `/session/${encodeURIComponent(sessionId)}`;
+}
+
+/** Drill-down pages live under here; the split and the value are path segments, not parameters,
+ * so each value has one canonical address rather than one per parameter ordering. */
+const SPLIT_PATH = "/split";
+
+/** The only parameters a drill-down link carries over. `tab` is dropped because the path already
+ * names the split, and `sort`/`page` because the drill-down's own session list is a different list
+ * — landing on page 7 of it is the D34 bug wearing a new hat. */
+const WINDOW_PARAMS = [RANGE_PRESET_PARAM, RANGE_FROM_PARAM, RANGE_TO_PARAM];
+
+/**
+ * Builds the link from a cost-split totals row to that value's drill-down page.
+ *
+ * @param current - the parameters the dashboard is being viewed with
+ * @param tab - which split the row was read from
+ * @param value - the row's visible label
+ */
+export function splitValueHref(current: URLSearchParams, tab: SplitTab, value: string): string {
+	const next = new URLSearchParams();
+	for (const key of WINDOW_PARAMS) {
+		const carried = current.get(key);
+		if (carried !== null) next.set(key, carried);
+	}
+
+	const path = `${SPLIT_PATH}/${tab}/${encodeURIComponent(value)}`;
+	const query = next.toString();
+	return query === "" ? path : `${path}?${query}`;
 }

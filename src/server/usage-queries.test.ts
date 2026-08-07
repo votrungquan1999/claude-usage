@@ -13,6 +13,7 @@ import {
 	getSessionBreakdown,
 	listSessions,
 	SessionSortOrder,
+	splitValueBreakdown,
 	type DateRange,
 } from "./usage-queries";
 
@@ -573,6 +574,237 @@ test("on the repo split, checkouts sharing a repoKey merge under the shortest pr
 
 	expect(rows).toContainEqual(expect.objectContaining({ dimensionValue: "personal/ccp", costUsd: 3, eventCount: 2 }));
 	expect(rows.some((row) => row.dimensionValue === "personal/ccp-TICKET-42")).toBe(false);
+});
+
+test("a repository keeps ONE label across the window, including days when only its worktree ran", async () => {
+	// Picking the shortest slug per DAY splits one repository into two ranked rows as soon as a
+	// worktree works a branch alone for a day — each carrying part of the cost, and each linking
+	// to part of the sessions.
+	const range = { from: new Date("2026-12-01T00:00:00.000Z"), to: new Date("2026-12-02T23:59:59.999Z") };
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_wl_main",
+			messageId: "msg_wl_main",
+			timestamp: new Date("2026-12-01T10:00:00.000Z"),
+			projectSlug: "personal/rules",
+			repoKey: "hash-wl",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_wl_tree",
+			messageId: "msg_wl_tree",
+			timestamp: new Date("2026-12-02T10:00:00.000Z"),
+			projectSlug: "personal/rules-feature-branch",
+			repoKey: "hash-wl",
+			costUsd: 2,
+		}),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	expect(rows.map((row) => row.dimensionValue)).toEqual(["personal/rules", "personal/rules"]);
+});
+
+test("drilling into a repository covers every worktree checkout that shares it", async () => {
+	const range = dayRange("2026-12-05");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_dd_main",
+			messageId: "msg_dd_main",
+			sessionId: "dd-main",
+			timestamp: range.from,
+			projectSlug: "personal/dd",
+			repoKey: "hash-dd",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_dd_tree",
+			messageId: "msg_dd_tree",
+			sessionId: "dd-tree",
+			timestamp: range.from,
+			projectSlug: "personal/dd-TICKET-1",
+			repoKey: "hash-dd",
+			costUsd: 2,
+		}),
+	]);
+
+	const breakdown = await splitValueBreakdown(
+		db,
+		CostSplitDimension.Repo,
+		"personal/dd",
+		range,
+		0,
+		25,
+		SessionSortOrder.Cost,
+	);
+
+	// The clicked row is worth $3 on the Repo tab, so the page it opens must be worth $3 too — the
+	// worktree's session cannot be missing just because the row is labelled with the main checkout.
+	expect(breakdown.costUsd).toBe(3);
+	expect(breakdown.sessionCount).toBe(2);
+	expect(breakdown.sessions.map((session) => session.sessionId)).toEqual(["dd-tree", "dd-main"]);
+});
+
+test("drilling into a project covers both its repository and the turns that resolved no repository", async () => {
+	// Since per-turn attribution a turn that resolved the repo and one that fell back to the
+	// project directory land on the SAME slug, and the Project tab sums them into one row. A
+	// drill-down matching only the repository would show two thirds of the number clicked.
+	const range = dayRange("2026-12-06");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_pp_repo",
+			messageId: "msg_pp_repo",
+			sessionId: "pp-repo",
+			timestamp: range.from,
+			projectSlug: "personal/pp",
+			repoKey: "hash-pp",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_pp_bare",
+			messageId: "msg_pp_bare",
+			sessionId: "pp-bare",
+			timestamp: range.from,
+			projectSlug: "personal/pp",
+			costUsd: 2,
+		}),
+	]);
+
+	const breakdown = await splitValueBreakdown(
+		db,
+		CostSplitDimension.Project,
+		"personal/pp",
+		range,
+		0,
+		25,
+		SessionSortOrder.Cost,
+	);
+
+	expect(breakdown.costUsd).toBe(3);
+	expect(breakdown.sessionCount).toBe(2);
+});
+
+test("drilling into a model covers every raw variant that normalizes to its name", async () => {
+	const range = dayRange("2026-12-07");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_mm_plain",
+			messageId: "msg_mm_plain",
+			sessionId: "mm-plain",
+			timestamp: range.from,
+			model: "claude-opus-5",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_mm_long",
+			messageId: "msg_mm_long",
+			sessionId: "mm-long",
+			timestamp: range.from,
+			model: "claude-opus-5[1m]",
+			costUsd: 2,
+		}),
+	]);
+
+	const breakdown = await splitValueBreakdown(
+		db,
+		CostSplitDimension.Model,
+		"claude-opus-5",
+		range,
+		0,
+		25,
+		SessionSortOrder.Cost,
+	);
+
+	expect(breakdown.costUsd).toBe(3);
+	expect(breakdown.sessionCount).toBe(2);
+});
+
+test("drilling into the unattributed bucket covers every session with no repository, and only those", async () => {
+	const range = dayRange("2026-12-08");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_un_a",
+			messageId: "msg_un_a",
+			sessionId: "un-a",
+			timestamp: range.from,
+			projectSlug: "personal/un-a",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_un_b",
+			messageId: "msg_un_b",
+			sessionId: "un-b",
+			timestamp: range.from,
+			projectSlug: "personal/un-b",
+			costUsd: 2,
+		}),
+		// Attributed to a real repository, so it belongs to that row rather than this bucket.
+		event({
+			requestId: "req_un_repo",
+			messageId: "msg_un_repo",
+			sessionId: "un-repo",
+			timestamp: range.from,
+			projectSlug: "personal/un-c",
+			repoKey: "hash-un",
+			costUsd: 4,
+		}),
+	]);
+
+	const breakdown = await splitValueBreakdown(
+		db,
+		CostSplitDimension.Repo,
+		"(unattributed)",
+		range,
+		0,
+		25,
+		SessionSortOrder.Cost,
+	);
+
+	expect(breakdown.costUsd).toBe(3);
+	expect(breakdown.sessionCount).toBe(2);
+	expect(breakdown.sessions.some((session) => session.sessionId === "un-repo")).toBe(false);
+});
+
+test("a session's cost on a drill-down is the slice attributed to that value, not the whole session", async () => {
+	// Per-turn attribution lets one session span repositories, so "what this session cost" has two
+	// answers. The row shows the slice — that is what makes the rows sum to the total above them —
+	// and carries the whole-session figure alongside so clicking through is not a surprise.
+	const range = dayRange("2026-12-09");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_sp_a",
+			messageId: "msg_sp_a",
+			sessionId: "sp-split",
+			timestamp: range.from,
+			projectSlug: "personal/sp-a",
+			repoKey: "hash-sp-a",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_sp_b",
+			messageId: "msg_sp_b",
+			sessionId: "sp-split",
+			timestamp: range.from,
+			projectSlug: "personal/sp-b",
+			repoKey: "hash-sp-b",
+			costUsd: 3,
+		}),
+	]);
+
+	const breakdown = await splitValueBreakdown(
+		db,
+		CostSplitDimension.Repo,
+		"personal/sp-a",
+		range,
+		0,
+		25,
+		SessionSortOrder.Cost,
+	);
+
+	expect(breakdown.costUsd).toBe(1);
+	expect(breakdown.sessions).toHaveLength(1);
+	expect(breakdown.sessions[0].costUsd).toBe(1);
+	expect(breakdown.sessions[0].totalCostUsd).toBe(4);
 });
 
 test("dailyEfficiencyByModel splits a day's cache savings by model, so the mix and the savings agree", async () => {

@@ -12,8 +12,10 @@ import {
 	dimensionValueDomain,
 	earliestEventTimestamp,
 	type SessionSortOrder,
+	type SplitValueBreakdown,
 	listSessions,
 	rollUpEfficiencyByDay,
+	splitValueBreakdown,
 } from "@/server/usage-queries";
 
 /**
@@ -103,6 +105,32 @@ export const loadDailyEfficiency = cache(async (fromMs: number, toMs: number): P
  * @param pageSize - rows per page
  * @param sort - which ordering to page through
  */
+/**
+ * One dimension value's drill-down: its window totals plus a page of the sessions behind them.
+ *
+ * @param dimension - which split the value was read from
+ * @param value - the row's visible label
+ * @param fromMs - window start, epoch milliseconds
+ * @param toMs - window end, epoch milliseconds
+ * @param pageIndex - zero-based page number
+ * @param pageSize - rows per page
+ * @param sort - which ordering to page through
+ */
+export const loadSplitValueBreakdown = cache(
+	async (
+		dimension: CostSplitDimension,
+		value: string,
+		fromMs: number,
+		toMs: number,
+		pageIndex: number,
+		pageSize: number,
+		sort: SessionSortOrder,
+	): Promise<SplitValueBreakdown> => {
+		const db = await getDatabase();
+		return splitValueBreakdown(db, dimension, value, { from: new Date(fromMs), to: new Date(toMs) }, pageIndex, pageSize, sort);
+	},
+);
+
 export const loadSessionPage = cache(
 	async (
 		fromMs: number,

@@ -47,7 +47,9 @@ These are load-bearing — each was expensive to establish (a real defect or a p
 
 - **Attribution is resolved per TURN; the project directory is only the fallback.** `attributeTurns` (`src/parser/attribution.mjs`) places each turn on its own evidence, in falling order of directness: the directory the turn actually ran in, else the repository holding most of the files that turn read or wrote, else the repository the session is already in, else the project directory's own identity. Ties among files break toward the repository already in play, then toward whichever was touched first, so the same turn always attributes the same way.
 
-  `cwd` deliberately outranks the files: a turn running inside one repository while *reading* a file from another is working on the first. Where `cwd` is a parent folder it resolves to nothing and the files decide — which is the entire case this exists for. A session launched from a directory that *contains* repositories rather than being one previously attributed 100% of its spend to that parent; measured over the real corpus, per-turn attribution places **93.1%** of it on a specific repository instead.
+  `cwd` deliberately outranks the files: a turn running inside one repository while *reading* a file from another is working on the first. Where `cwd` is a parent folder it resolves to nothing and the files decide — which is the entire case this exists for. A session launched from a directory that *contains* repositories rather than being one previously attributed 100% of its spend to that parent. Predicted at **93.1%** by a dry run over the local transcripts, then confirmed in production after the corrective backfill: repo-less spend fell from **54.8% to 7.8%** of all spend, `repoKey` coverage went 25,013 → 60,647 events, and distinct project slugs went 7 → 68.
+
+The single figure that validated the whole change was `personal/quant-trading` landing at **$1,766.90 / 14,642 events** against a pre-build prediction of ~$1,750 — parser and store agreeing on a number neither could fake.
 
   The per-turn resolver (`resolveRepoAt`) caches misses as well as hits, unlike the per-directory ones below: it resolves a real filesystem path, which will not become a repository mid-run, and the misses are both the common case and the expensive one to re-ask.
 
@@ -57,9 +59,30 @@ These are load-bearing — each was expensive to establish (a real defect or a p
 
 - **A wrong `CLAUDE_USAGE_API_URL` fails completely silently.** `postEvents` returns `{sent: 0}` on any non-2xx without throwing, and `syncTail` degrades every failure mode to a no-op by design — so a URL pointing at the wrong service produces no error, no log and no hook latency, indefinitely. Found the hard way: `http://localhost:3001` had been taken over by an unrelated Next app, every live hook sync had been 404ing into the void, and a backfill sent 2,375 requests before the summary line (`0 events, 2375 failures`) made it visible. The summary is the only place this surfaces at all; the hooks never will.
 
+- **`{sent: 0}` has at least four meanings, and they are indistinguishable from the outside.** Nothing to send, wrong host, wrong secret, or a held lock all return the same value. Fixing the URL above exposed the next one underneath it: the sync still reported `{sent: 0}` because `/api/sync` was answering **401** — the local secret no longer matched the deployed one.
+
+  **The probe that tells them apart** — POST an empty batch and read the status directly, rather than inferring it from `sent`:
+
+  ```js
+  const res = await fetch(resolveSyncUrl(process.env.CLAUDE_USAGE_API_URL), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-claude-usage-secret": process.env.CLAUDE_USAGE_SECRET },
+    body: JSON.stringify({ machineId: "probe", events: [] }),
+  });
+  // 200 {"accepted":0,"rejected":0} = host and secret both good. 401 = secret. Anything else = host.
+  ```
+
+  An empty batch is safe: it writes nothing and still exercises auth and routing. Do this **before** concluding a sync works, and before spending ten minutes on a backfill.
+
+- **`~/.claude/claude-usage` is a SYMLINK to the checkout, so there is only ONE `.env`.** `resolveDotEnvPath` prefers the installed path and falls back to the repo root, which reads as two files and was recorded as two for a while — they are the same inode. Editing either edits both, and "I fixed one of them" is not a thing that can happen.
+
 - **The secret travels in `x-claude-usage-secret`, not `Authorization: Bearer`.** `SECRET_HEADER` is declared twice — `bin/sync.mjs` and `src/app/api/lib/verify-secret.ts` — and a probe using the conventional bearer header gets an indistinguishable `401`.
 
-- **The deployed secret is not the one in `.env`.** The local file holds a dev value; the live one is a `random.RandomPassword` read from Pulumi (`pulumi stack output claudeUsageSecret --show-secrets`, no `--stack` flag — the stack is org-qualified and already selected).
+- **The deployed secret is a `random.RandomPassword` in Pulumi** — `pulumi stack output claudeUsageSecret --show-secrets` (the stack is org-qualified and already selected, so no `--stack` flag is needed; `PULUMI_ACCESS_TOKEN` must be exported first or the CLI hangs).
+
+  This machine's `.env` held a *different* dev value until 2026-08-05, which is what made every sync 401 even after the URL was corrected. It now holds the deployed one, so hooks authenticate on their own. Two consequences: the local `npm run dev` login takes that same secret, and the e2e suite is untouched by any of it — `playwright.config.ts` overrides `CLAUDE_USAGE_SECRET` with `E2E_SECRET`, a throwaway that deliberately is not the deployed value.
+
+  When writing it locally, pipe it straight from `pulumi stack output` into whatever rewrites the file. Passing it as an argument puts it in the process list; echoing it puts it in a terminal scrollback and, if an agent is driving, into a transcript.
 
 - **A day is `Asia/Ho_Chi_Minh`, applied inside the aggregation** (`DASHBOARD_TIMEZONE` in `src/server/usage-queries.ts`, fed into Mongo's `$dateToString` `timezone` option — not computed client-side). Fixed, not derived from UTC or the viewer's browser zone: at UTC+7, midnight UTC is 07:00 local, so a UTC day boundary would misfile a full morning's work into "yesterday"; a browser-local boundary would make the same query return different totals depending on where it's opened. **Totals over a range containing unpriced events render as a lower bound** (D17) — e.g. `$412+ (18 events unpriced)` — because silently summing only the priced events reproduces the exact "reads as free" failure the `priced` flag exists to prevent, one level up in the aggregation.
 
@@ -82,6 +105,8 @@ These are load-bearing — each was expensive to establish (a real defect or a p
 - **The installer (`scripts/install.mjs` / `src/install.mjs`) has never been run against this machine's real `~/.claude/settings.json`** — only against a faked `$HOME` in tests, by explicit instruction not to touch the real file during this run.
 - **`SessionStart` now blocks ~1.4s inline on the largest real transcript on this machine** (261 MiB, measured 1,372 ms / 10,846 events / 6 batched requests, up from a 29 ms tail-only baseline) — acceptable relative to the 5 s client fetch timeout this codebase already tolerates elsewhere, but a real, honest latency regression on session start for that one session, not something to dismiss as noise. A typical session (4.6 MiB) is unaffected (~74 ms).
 - **No staleness signal if sync silently stops.** Every failure mode in `bin/sync.mjs` (no network, non-2xx response, missing `.env`, missing/unreadable transcript) degrades to a silent no-op by design — there is no local watermark, no `lastSynced` field, and no dashboard surface showing when a machine last successfully synced. A machine can stop syncing entirely (bad secret, expired URL, `.env` deleted) and nothing anywhere will say so; this was confirmed absent by search, not assumed.
+
+  No longer hypothetical: this machine ran from 2026-08-04 to 2026-08-05 sending nothing at all — first a dead host, then a stale secret — and the only symptom was a dashboard whose newest bar quietly stopped advancing. It was noticed because someone looked at the chart, which is exactly the detection mechanism this gap describes as missing. A "last successful sync per machine" figure on the dashboard would have caught both faults on day one.
 - **`repoKey`'s unsalted hash is dictionary-reversible for a known or guessable repo name.** It is not invertible in general, but it is trivially *confirmable*: `sha256` over a short, low-entropy, guessable normalized string (`github.com/org/repo`) means anyone with collection access and a candidate repo name can confirm-or-deny that repo's presence at roughly 1M guesses/sec/core — proven by recovering a real repo's identity from its stored hash via a 4-candidate dictionary. This defeats casual browsing of Atlas (the actual concern D20 was chosen to address) but not a targeted guess against a named or enumerable repo.
 
 ## Contradictions found in the source material

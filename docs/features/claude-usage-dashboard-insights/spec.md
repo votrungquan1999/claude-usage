@@ -15,6 +15,8 @@ The sync half (hooks, mapper, `/api/sync`, storage) is a separate feature with i
 - **Model mix over time** (`efficiency/model-mix-*`) — share of each day's spend.
 - **Sessions in this range** (`session-list/`) — 25 a page, most expensive first, linking into `/session/[id]`.
 
+Every totals-table row also links into `/split/[dimension]/[value]`, a drill-down with its own spec at [`../split-drilldown/spec.md`](../split-drilldown/spec.md). Two things here changed for it: `dashboardHref` is now a delegate to `pathHref`, so the shared pager stays on whichever page renders it; and a repository's label is resolved per WINDOW rather than per day — see the repoKey section below.
+
 ## Invariants
 
 Each of these was expensive to establish. Undoing one silently reintroduces what it was built to prevent — silently, in every case, which is why they are written down.
@@ -65,6 +67,8 @@ So a local day can straddle a price change — and `claude-sonnet-5` changes pri
 `repoKey` is an unsalted SHA-256 over a normalised git remote — dictionary-confirmable, so an identifier rather than an opaque token. Every other split interpolates its own field as the row label; `Repo` reads `projectSlug` instead (`groupingFieldFor`) and labels each repository with the shortest slug that maps to it.
 
 The repo split also **inverts** the project split's rule for repo-less rows. On the Project tab each stands alone, so an unrelated project is never folded in just because both lack the field. On the Repo tab they all collapse into one `(unattributed)` bucket: "no repository" is the answer itself there, and spreading it across project names would hide exactly that.
+
+**A repository's label is resolved across the whole window, not per day.** This reverses half of the rule above. Picking the shortest slug inside each *day's* merge named a repository after whichever checkout ran that day, so a worktree working a branch alone for a day named that day after itself — and since `rankDimensionTotals` groups by the label *string*, one repository then occupied **two ranked rows**, splitting its cost. The merge grouping is still per (day, repoKey), which is what draws one bar per day; only the label is window-wide, with ties broken alphabetically so it never depends on Mongo's row order. Consequence: a repo that used to show as two rows now shows as one.
 
 That bucket was 54.8% of all spend, and the two tabs were consequently identical in every other respect — verified by running both grouping rules over the real corpus, which produced byte-identical output once the collapse was removed. Per-turn attribution (see the sync spec) changed both facts: the bucket is now a genuine ~7% residue of work outside any repository, and the tabs genuinely differ, because four worktree directories now resolve to their main repository's key and merge on this tab while standing alone on the Project tab.
 

@@ -372,6 +372,210 @@ export async function listSessions(
 	};
 }
 
+/** One dimension value's drill-down: what it cost in the window, and the sessions that worked on
+ * it. Header and list come from ONE aggregation, so the figure above the table is the sum of the
+ * table by construction rather than by two queries happening to agree. */
+export interface SplitValueBreakdown {
+	/** The label as the dashboard row showed it, echoed back. */
+	dimensionValue: string;
+	/** Cost attributed to THIS value inside the window — not the whole cost of the sessions
+	 * listed, which since per-turn attribution can span several repositories. */
+	costUsd: number;
+	unpricedEventCount: number;
+	eventCount: number;
+	/** Sessions in the whole window, not just this page. */
+	sessionCount: number;
+	/** One page of them, ordered by `sort`. */
+	sessions: SessionListRow[];
+}
+
+/**
+ * One dimension value's drill-down page: the totals behind a cost-split row, plus a page of the
+ * sessions that worked on it.
+ *
+ * @param db - the connected database
+ * @param dimension - which split the value was read from
+ * @param value - the row's visible label
+ * @param range - required bound so the query hits `by_time`
+ * @param pageIndex - zero-based page number
+ * @param pageSize - rows per page
+ * @param sort - which ordering to page through
+ */
+export async function splitValueBreakdown(
+	db: Db,
+	dimension: CostSplitDimension,
+	value: string,
+	range: DateRange,
+	pageIndex: number,
+	pageSize: number,
+	sort: SessionSortOrder,
+): Promise<SplitValueBreakdown> {
+	const match = await splitValueMatch(db, dimension, value, range);
+
+	const [facet] = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.aggregate<SplitValueFacet>([
+			{ $match: { timestamp: { $gte: range.from, $lte: range.to }, ...match } },
+			{
+				$group: {
+					_id: "$sessionId",
+					projectSlug: { $first: "$projectSlug" },
+					machineId: { $first: "$machineId" },
+					startedAt: { $min: "$timestamp" },
+					endedAt: { $max: "$timestamp" },
+					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
+					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
+					eventCount: { $sum: 1 },
+					models: { $addToSet: "$model" },
+					// Newest non-null title, exactly as `listSessions` reads it — see there for why the
+					// newest EVENT's title is the wrong thing to read.
+					latestTitle: {
+						$max: { $cond: [{ $ifNull: ["$sessionTitle", false] }, { t: "$timestamp", v: "$sessionTitle" }, null] },
+					},
+				},
+			},
+			{
+				// The header and the page come out of the same grouped set, so the figure above the
+				// table is the sum of the table by construction — not two queries hoping to agree.
+				$facet: {
+					page: [{ $sort: sortStageFor(sort) }, { $skip: pageIndex * pageSize }, { $limit: pageSize }],
+					totals: [
+						{
+							$group: {
+								_id: null,
+								costUsd: { $sum: "$costUsd" },
+								unpricedEventCount: { $sum: "$unpricedEventCount" },
+								eventCount: { $sum: "$eventCount" },
+								sessionCount: { $sum: 1 },
+							},
+						},
+					],
+				},
+			},
+		])
+		.toArray();
+
+	const rows = facet?.page ?? [];
+	const totals = facet?.totals[0];
+	const lifetime = await sessionLifetimeTotals(
+		db,
+		rows.map((row) => row._id),
+	);
+
+	return {
+		dimensionValue: value,
+		costUsd: totals?.costUsd ?? 0,
+		unpricedEventCount: totals?.unpricedEventCount ?? 0,
+		eventCount: totals?.eventCount ?? 0,
+		sessionCount: totals?.sessionCount ?? 0,
+		sessions: rows.map((row) => ({
+			sessionId: row._id,
+			projectSlug: row.projectSlug ?? UNATTRIBUTED_DIMENSION_VALUE,
+			machineId: row.machineId ?? UNATTRIBUTED_DIMENSION_VALUE,
+			startedAt: row.startedAt,
+			endedAt: row.endedAt,
+			costUsd: row.costUsd,
+			unpricedEventCount: row.unpricedEventCount,
+			eventCount: row.eventCount,
+			sessionTitle: row.latestTitle?.v,
+			models: [...new Set(row.models.map(normalizeModel))].sort(),
+			totalCostUsd: lifetime.get(row._id)?.costUsd ?? row.costUsd,
+			totalUnpricedEventCount: lifetime.get(row._id)?.unpricedEventCount ?? row.unpricedEventCount,
+		})),
+	};
+}
+
+/** The drill-down `$facet`'s combined result shape. */
+interface SplitValueFacet {
+	page: RawSessionListRow[];
+	totals: { costUsd: number; unpricedEventCount: number; eventCount: number; sessionCount: number }[];
+}
+
+/**
+ * Turns a row's visible LABEL back into the events behind it. The label is not the query: every
+ * split merges before it labels, so this has to reproduce the same merge or the page will disagree
+ * with the row that was clicked.
+ *
+ * A value the dashboard never rendered resolves to a filter nothing matches, which surfaces as an
+ * empty range rather than as an error — the same treatment an out-of-range window gets.
+ *
+ * @param db - the connected database
+ * @param dimension - which split the value was read from
+ * @param value - the row's visible label
+ * @param range - the window the label was read in; labels are window-scoped, so this is required
+ */
+async function splitValueMatch(
+	db: Db,
+	dimension: CostSplitDimension,
+	value: string,
+	range: DateRange,
+): Promise<Record<string, unknown>> {
+	if (dimension === CostSplitDimension.Machine) return { machineId: value };
+
+	// Model rows are labelled with the NORMALIZED name, so several raw stored strings can sit
+	// behind one row — the same merge `mergeByNormalizedDimension` does after the `$group`.
+	if (dimension === CostSplitDimension.Model) {
+		const stored = await db
+			.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+			.distinct("model", { timestamp: { $gte: range.from, $lte: range.to } });
+		return { model: { $in: stored.filter((model) => normalizeModel(model) === value) } };
+	}
+
+	const repoKey = await repoKeyForLabel(db, value, range);
+
+	if (dimension === CostSplitDimension.Repo) {
+		// On this tab every repo-less row collapses into one named bucket, so drilling into it means
+		// everything with no repository — not one project that happens to lack the field.
+		if (value === UNATTRIBUTED_DIMENSION_VALUE) return { repoKey: { $exists: false } };
+		return repoKey === undefined ? MATCHES_NOTHING : { repoKey };
+	}
+
+	// A project label can cover BOTH a repository and repo-less events carrying the same slug:
+	// since per-turn attribution, a turn that resolved the repo and one that fell back to the
+	// project directory land on the same name, and `rankDimensionTotals` sums them into one row.
+	const repoLess = { projectSlug: value, repoKey: { $exists: false } };
+	return repoKey === undefined ? repoLess : { $or: [{ repoKey }, repoLess] };
+}
+
+/** A filter for a label the dashboard never rendered. `$in: []` matches no document, which reads
+ * downstream as an empty window rather than as a failure. */
+const MATCHES_NOTHING = { _id: { $in: [] } };
+
+/**
+ * The repository a label names in this window, or undefined when no repository carries that label.
+ * Runs the same labelling rule the split itself uses, so the two can never drift apart.
+ *
+ * @param db - the connected database
+ * @param value - the row's visible label
+ * @param range - the window the label was read in
+ */
+async function repoKeyForLabel(db: Db, value: string, range: DateRange): Promise<string | undefined> {
+	const pairs = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.aggregate<{ _id: { projectSlug: string | null; repoKey: string } }>([
+			{ $match: { timestamp: { $gte: range.from, $lte: range.to }, repoKey: { $exists: true } } },
+			{ $group: { _id: { projectSlug: "$projectSlug", repoKey: "$repoKey" } } },
+		])
+		.toArray();
+
+	const labels = repoLabelsAcrossRange(
+		pairs.map((pair) => ({
+			// The day is irrelevant to labelling and never compared against a real one.
+			day: COLOR_DOMAIN_SENTINEL_DAY,
+			dimensionValue: pair._id.projectSlug ?? UNATTRIBUTED_DIMENSION_VALUE,
+			costUsd: 0,
+			unpricedEventCount: 0,
+			eventCount: 0,
+			repoKey: pair._id.repoKey,
+		})),
+	);
+
+	for (const [repoKey, label] of labels) {
+		if (label === value) return repoKey;
+	}
+	return undefined;
+}
+
 /**
  * The `$sort` document for an order. Built from a closed switch rather than by interpolating a
  * field name, and every arm carries `_id: 1`: D38 — without a tie-break, `$skip` over tied rows
@@ -833,6 +1037,7 @@ function mergeByNormalizedDimension(rows: DimensionRowWithRepoKey[]): DimensionR
  * @param rows - rows keyed by (day, raw projectSlug), each carrying its repoKey when resolved
  */
 function mergeProjectRowsByRepoKey(rows: DimensionRowWithRepoKey[]): DimensionRowWithRepoKey[] {
+	const labels = repoLabelsAcrossRange(rows);
 	const merged = new Map<string, DimensionRowWithRepoKey>();
 
 	for (const row of rows) {
@@ -845,13 +1050,51 @@ function mergeProjectRowsByRepoKey(rows: DimensionRowWithRepoKey[]): DimensionRo
 			existing.costUsd += row.costUsd;
 			existing.unpricedEventCount += row.unpricedEventCount;
 			existing.eventCount += row.eventCount;
-			if (row.dimensionValue.length < existing.dimensionValue.length) existing.dimensionValue = row.dimensionValue;
 		} else {
-			merged.set(groupKey, { ...row });
+			merged.set(groupKey, { ...row, dimensionValue: labelFor(row, labels) });
 		}
 	}
 
 	return [...merged.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+/**
+ * Each repository's label across the WHOLE range: the shortest projectSlug seen for it anywhere in
+ * the window, ties broken alphabetically so the choice never depends on the order Mongo returned.
+ *
+ * Resolved before any per-day grouping, and that ordering is the point. Picking the shortest slug
+ * within each DAY names a repository after whichever checkout happened to run that day, so one
+ * repository splits into two ranked rows the moment a worktree works a branch alone — each holding
+ * part of the cost, and each drilling down to part of the sessions.
+ *
+ * @param rows - every row in the window, each carrying its repoKey when one was resolved
+ */
+function repoLabelsAcrossRange(rows: DimensionRowWithRepoKey[]): Map<string, string> {
+	const labels = new Map<string, string>();
+
+	for (const row of rows) {
+		if (!row.repoKey) continue;
+		const existing = labels.get(row.repoKey);
+		if (existing === undefined || row.dimensionValue.length < existing.length) {
+			labels.set(row.repoKey, row.dimensionValue);
+		} else if (row.dimensionValue.length === existing.length && row.dimensionValue < existing) {
+			labels.set(row.repoKey, row.dimensionValue);
+		}
+	}
+
+	return labels;
+}
+
+/**
+ * A row's display label: its repository's window-wide name, or its own slug when it has no
+ * repository.
+ *
+ * @param row - the row being labelled
+ * @param labels - repository labels from `repoLabelsAcrossRange`
+ */
+function labelFor(row: DimensionRowWithRepoKey, labels: Map<string, string>): string {
+	if (!row.repoKey) return row.dimensionValue;
+	return labels.get(row.repoKey) ?? row.dimensionValue;
 }
 
 /**
@@ -865,6 +1108,7 @@ function mergeProjectRowsByRepoKey(rows: DimensionRowWithRepoKey[]): DimensionRo
  * @param rows - rows keyed by (day, projectSlug), each carrying its repoKey when resolved
  */
 function mergeRepoRows(rows: DimensionRowWithRepoKey[]): DimensionRowWithRepoKey[] {
+	const labels = repoLabelsAcrossRange(rows);
 	const merged = new Map<string, DimensionRowWithRepoKey>();
 
 	for (const row of rows) {
@@ -875,15 +1119,12 @@ function mergeRepoRows(rows: DimensionRowWithRepoKey[]): DimensionRowWithRepoKey
 			existing.costUsd += row.costUsd;
 			existing.unpricedEventCount += row.unpricedEventCount;
 			existing.eventCount += row.eventCount;
-			// Only a real repository picks a label from its slugs; the unattributed bucket keeps its
-			// own name however many projects land in it.
-			if (row.repoKey && row.dimensionValue.length < existing.dimensionValue.length) {
-				existing.dimensionValue = row.dimensionValue;
-			}
 		} else {
+			// Only a real repository takes a label from its slugs; the unattributed bucket keeps its
+			// own name however many projects land in it.
 			merged.set(groupKey, {
 				...row,
-				dimensionValue: row.repoKey ? row.dimensionValue : UNATTRIBUTED_DIMENSION_VALUE,
+				dimensionValue: row.repoKey ? labelFor(row, labels) : UNATTRIBUTED_DIMENSION_VALUE,
 			});
 		}
 	}

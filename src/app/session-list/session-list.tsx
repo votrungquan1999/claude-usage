@@ -1,20 +1,10 @@
 import { SelectItem } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { DASHBOARD_TIMEZONE, SessionSortOrder } from "@/server/usage-queries";
+import { SessionSortOrder } from "@/server/usage-queries";
 
-import { formatInstantInTimezone, formatLowerBoundCost } from "../dashboard-format";
 import { loadSessionPage } from "../dashboard-loaders";
-import { sessionHref } from "../href";
 import { SessionSort } from "./session-list.type";
-import {
-	SessionCostCell,
-	SessionCostNote,
-	SessionLink,
-	SessionListLayout,
-	SessionListToolbar,
-	SessionPager,
-	SessionSortField,
-} from "./session-list.ui";
+import { SessionListLayout, SessionListToolbar, SessionPager, SessionSortField } from "./session-list.ui";
+import { SessionTable } from "./session-table";
 
 /** D34 — 25 a page. Enough to scan, few enough that the sort (which cannot use an index, since
  * cost is computed by the group) stays cheap. */
@@ -85,51 +75,7 @@ export async function SessionList({
 				</SessionSortField>
 			</SessionListToolbar>
 
-			<Table>
-				<TableHeader>
-					<TableRow>
-						<TableHead>Session</TableHead>
-						<TableHead>Project</TableHead>
-						<TableHead>Machine</TableHead>
-						<TableHead>Models</TableHead>
-						<TableHead>Started</TableHead>
-						<TableHead>Events</TableHead>
-						<TableHead>Cost in range</TableHead>
-					</TableRow>
-				</TableHeader>
-				<TableBody>
-					{page.rows.map((row) => (
-						<TableRow key={row.sessionId}>
-							<TableCell>
-								{/* The link carries the NAME, because that is what tells two rows apart —
-								    project and machine repeat across dozens of them. Sessions synced before
-								    titles were captured fall back to a short id, which is at least unique,
-								    until a backfill re-run names them. */}
-								<SessionLink href={sessionHref(row.sessionId)}>
-									{row.sessionTitle ?? row.sessionId.slice(0, 8)}
-								</SessionLink>
-							</TableCell>
-							<TableCell>{row.projectSlug}</TableCell>
-							<TableCell>{row.machineId}</TableCell>
-							<TableCell>{row.models.join(", ")}</TableCell>
-							<TableCell>{formatInstantInTimezone(row.startedAt, DASHBOARD_TIMEZONE)}</TableCell>
-							<TableCell>{row.eventCount}</TableCell>
-							<TableCell>
-								<SessionCostCell>
-									<span>{formatLowerBoundCost(row.costUsd, row.unpricedEventCount)}</span>
-									{/* Shown only when the session reaches outside the window — otherwise it
-									    would repeat the figure beside it on every single row. */}
-									{row.totalCostUsd !== row.costUsd && (
-										<SessionCostNote>
-											{`whole session ${formatLowerBoundCost(row.totalCostUsd, row.totalUnpricedEventCount)}`}
-										</SessionCostNote>
-									)}
-								</SessionCostCell>
-							</TableCell>
-						</TableRow>
-					))}
-				</TableBody>
-			</Table>
+			<SessionTable rows={page.rows} costLabel="Cost in range" />
 
 			<SessionPager currentPage={pageIndex + 1} pageCount={pageCount} />
 		</SessionListLayout>

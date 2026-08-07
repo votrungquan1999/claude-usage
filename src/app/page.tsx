@@ -5,7 +5,7 @@ import { DASHBOARD_TIMEZONE } from "@/server/usage-queries";
 
 import { CardErrorBoundary } from "./card-error-boundary.ui";
 import { CostSplits } from "./cost-split-view/cost-splits";
-import { colorDomainWindow, dayKeyInTimezone, parseDashboardRange } from "./dashboard-format";
+import { colorDomainWindow, dayKeyInTimezone, parseDashboardRange, readSearchParams } from "./dashboard-format";
 import { loadEarliestEventMs } from "./dashboard-loaders";
 import {
 	CardErrorNotice,
@@ -170,17 +170,3 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 	);
 }
 
-/**
- * Next's resolved search params as a `URLSearchParams`. A repeated key arrives as an array and is
- * dropped rather than joined — a joined value would be a string nothing in the allowlist matches,
- * which is the same outcome by a less obvious route.
- *
- * @param resolved - the awaited `searchParams`
- */
-function readSearchParams(resolved: Record<string, string | string[] | undefined>): URLSearchParams {
-	const params = new URLSearchParams();
-	for (const [key, value] of Object.entries(resolved)) {
-		if (typeof value === "string") params.set(key, value);
-	}
-	return params;
-}

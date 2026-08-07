@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 
-import { dashboardHref } from "../href";
+import { pathHref } from "../href";
 import type { SessionSort } from "./session-list.type";
 
 export interface SessionPageNavigation {
@@ -27,22 +27,25 @@ export interface SessionPageNavigation {
 export function useSessionPageNavigation(): SessionPageNavigation {
 	const router = useRouter();
 	const searchParams = useSearchParams();
+	// Read rather than hardcoded: this same pager runs on the dashboard AND on a drill-down page,
+	// which pages through its own list and must stay on its own URL.
+	const pathname = usePathname();
 	const [isPending, startTransition] = useTransition();
 
 	function goToPage(page: number): void {
 		startTransition(() => {
-			router.replace(dashboardHref(searchParams, { page }), { scroll: false });
+			router.replace(pathHref(pathname, searchParams, { page }), { scroll: false });
 		});
 	}
 
 	function selectSort(sort: string): void {
 		startTransition(() => {
-			router.replace(dashboardHref(searchParams, { sort: sort as SessionSort }), { scroll: false });
+			router.replace(pathHref(pathname, searchParams, { sort: sort as SessionSort }), { scroll: false });
 		});
 	}
 
 	function hrefForPage(page: number): string {
-		return dashboardHref(searchParams, { page });
+		return pathHref(pathname, searchParams, { page });
 	}
 
 	return { goToPage, selectSort, hrefForPage, isPending };
