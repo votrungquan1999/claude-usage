@@ -760,6 +760,10 @@ export function emptyModelMixRow(day: string): ModelMixDayRow {
  */
 export function modelMixByDay(rows: DailyEfficiencyByModelRow[], topModels: string[]): ModelMixDayRow[] {
 	const topSet = new Set(topModels);
+	// Every series the chart will draw, resolved over the WHOLE window so each day can carry all of
+	// them. The areas are stacked, so a day missing a key is a hole showing the page background —
+	// not a thin band. "Other" only joins if some model actually falls outside the top set.
+	const seriesKeys = rows.some((row) => !topSet.has(row.model)) ? [...topModels, OTHER_SERIES_KEY] : [...topModels];
 	const byDay = new Map<string, { totalCostUsd: number; totalEventCount: number; costByKey: Map<string, number> }>();
 
 	for (const row of rows) {
@@ -774,10 +778,11 @@ export function modelMixByDay(rows: DailyEfficiencyByModelRow[], topModels: stri
 	return [...byDay.entries()]
 		.map(([day, totals]) => {
 			const mixRow: ModelMixDayRow = { day, totalEventCount: totals.totalEventCount };
-			for (const [key, costUsd] of totals.costByKey) {
+			for (const key of seriesKeys) {
 				// A day can have events but no PRICED spend, so the denominator is checked per day
-				// rather than assumed from the row's existence.
-				mixRow[key] = totals.totalCostUsd === 0 ? null : costUsd / totals.totalCostUsd;
+				// rather than assumed from the row's existence. Only THAT makes a share undefined —
+				// a model that simply went unused is a measured 0% of a day that did have spend.
+				mixRow[key] = totals.totalCostUsd === 0 ? null : (totals.costByKey.get(key) ?? 0) / totals.totalCostUsd;
 			}
 			return mixRow;
 		})

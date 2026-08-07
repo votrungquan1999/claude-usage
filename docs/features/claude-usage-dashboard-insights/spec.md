@@ -80,6 +80,10 @@ That bucket was 54.8% of all spend, and the two tabs were consequently identical
 
 Gap fill only ever **inserts** — overwriting a present day would erase its `unpricedEventCount` and delete a lower-bound warning. Filled rows carry an explicit `eventCount: 0`, which is what lets the "no data in this range" guards mean anything once a dead window is 30 zero rows rather than an empty list. A day with no priced spend has no defined model mix and renders as a break; a flat zero would claim the models were not used.
 
+**The break is per DAY, never per model.** `modelMixByDay` resolves the series list over the whole window and writes every key on every day that had priced spend, `0` where a model went unused. A model absent from such a day is a *measured* zero, not missing data — and because the areas are stacked, letting it break punches a hole between the series below it and the series above, showing the page background rather than a thin band. That is what the operator saw on 2026-08-06: a black wedge across the day `claude-opus-5` first appeared, and smaller holes wherever an occasional model skipped a day. The old code only wrote a key for models that had a row, so the omission was invisible in the data and only surfaced as a rendering artifact.
+
+The distinction the whole rule turns on: **the denominator, not the numerator.** No priced spend that day → every share is undefined → the whole stack breaks together, which reads as a gap. Priced spend but none from this model → `0`.
+
 ### Every ranking has a deterministic tie-break
 
 Dimension totals tie-break by name; the session list by session id. Without it the Model tab and the model-mix chart can order tied models differently while claiming to describe the same thing, and under `$skip` a tied session appears on two pages or on none.

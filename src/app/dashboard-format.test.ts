@@ -497,6 +497,22 @@ test("a day with events but no priced spend has no defined mix, so it breaks rat
 	expect(rows[0].totalEventCount).toBe(4);
 });
 
+test("a model unused on a day that DID have spend is 0% of it, not a break in the stack", () => {
+	// The areas are stacked, so a break is a HOLE: the band the missing series would have filled
+	// shows the page background instead. Only a day with no priced spend at all is undefined.
+	const rows = modelMixByDay(
+		[
+			savingsModelRow({ day: "2026-08-01", model: "claude-opus-4-8", totalCostUsd: 100, totalEventCount: 4 }),
+			savingsModelRow({ day: "2026-08-02", model: "claude-opus-5", totalCostUsd: 80, totalEventCount: 3 }),
+			savingsModelRow({ day: "2026-08-02", model: "claude-opus-4-8", totalCostUsd: 20, totalEventCount: 1 }),
+		],
+		["claude-opus-4-8", "claude-opus-5"],
+	);
+
+	expect(rows[0]["claude-opus-5"]).toBe(0);
+	expect(rows[1]["claude-opus-5"]).toBe(0.8);
+});
+
 test("a session-list page is read from the URL, and anything that is not a page number reads as the first", () => {
 	expect(parseDashboardRange(new URLSearchParams("page=3"), NOW, EARLIEST, TZ).pageIndex).toBe(2);
 	expect(parseDashboardRange(new URLSearchParams(), NOW, EARLIEST, TZ).pageIndex).toBe(0);
