@@ -8,6 +8,8 @@ The dashboard's reading surface is a separate feature with its own spec at [`../
 
 Every row in the Cost-per-day totals table is a link, on all four tabs. Following it opens a page for that value showing what it cost in the window that was on screen, plus its sessions, 25 a page, with the same three orderings the dashboard list offers.
 
+Landed on `main` in `bdd7fed`, which also carries the window-stable label fix below. The model-mix fix in `c436532` is a different feature's chart and is unrelated.
+
 - `src/app/split/split-params.ts` — resolves the two path segments.
 - `src/app/split/[dimension]/[value]/page.tsx` — the page.
 - `splitValueBreakdown` in `src/server/usage-queries.ts` — the one query behind it.
