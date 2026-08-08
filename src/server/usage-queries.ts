@@ -1,7 +1,7 @@
 import type { Db } from "mongodb";
 
 import { normalizeModel } from "@/parser/models.mjs";
-import { cacheSavings, isPricedModel } from "@/parser/pricing.mjs";
+import { cacheSavings, isPricedModel, turnCarrySplit } from "@/parser/pricing.mjs";
 
 import {
 	MACHINE_SYNC_STATE_COLLECTION,
@@ -839,6 +839,81 @@ function mergeSessionModelRowsByNormalizedModel(rows: RawSessionModelRow[]): Ses
 	}
 
 	return [...merged.values()];
+}
+
+/** One turn (event) in a session's timeline, in the order it happened (card #161 Step 5/6). */
+export interface SessionTurnRow {
+	timestamp: Date;
+	isSubagent: boolean;
+	/** Whether this turn's `costUsd`/split can be trusted — an unpriced turn's dollars are all
+	 * zero (see below), so a caller bucketing turns needs this to mark a mixed bucket as a lower
+	 * bound instead of a complete figure (card #161 F2 adversarial Fix C / R38). */
+	priced: boolean;
+	costUsd: number;
+	/** Re-paying existing context — `carry + new === costUsd` exactly (D11's residual). */
+	carryUsd: number;
+	/** Buying new work — the residual `costUsd - carryUsd`, clamped at zero. */
+	newUsd: number;
+}
+
+/** Fields `getSessionTurns`' own mapper reads — the ONLY thing a per-turn read path should pull
+ * across the wire (card #161 F2 adversarial Fix B / R46). A large session still fetches every
+ * matching document (the ≤20-bar cap is on the CHART, never on which turns count toward the
+ * totals) — this narrows each one, it never narrows the row count. */
+const SESSION_TURN_PROJECTION = {
+	_id: 0,
+	model: 1,
+	timestamp: 1,
+	cacheReadTokens: 1,
+	cacheWrite5mTokens: 1,
+	cacheWrite1hTokens: 1,
+	costUsd: 1,
+	priced: 1,
+	isSubagent: 1,
+} as const;
+
+/**
+ * A session's turns, one row per event, oldest first (card #161 Step 5) — the per-turn read path
+ * `getSessionBreakdown` does not provide (it only returns pre-aggregated per-model totals).
+ *
+ * @param db - the connected database
+ * @param sessionId - the session to look up
+ */
+export async function getSessionTurns(db: Db, sessionId: string): Promise<SessionTurnRow[]> {
+	// Ascending timestamp is what `by_session` ({sessionId:1, timestamp:1}) already sorts by, so
+	// this is served pre-sorted rather than by a separate in-memory sort.
+	const events = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.find({ sessionId }, { projection: SESSION_TURN_PROJECTION })
+		.sort({ timestamp: 1 })
+		.toArray();
+
+	return events.map((event) => {
+		// Same $cond: ["$priced", ...] convention as every other dollar figure in this file: an
+		// unpriced event's cache tokens still exist, but its untrusted costUsd must not leak a
+		// nonzero split. Priced EACH turn at its OWN stored timestamp — never a session-wide rate.
+		const split = event.priced
+			? turnCarrySplit(
+					event.model,
+					event.timestamp.toISOString(),
+					{
+						cacheReadTokens: event.cacheReadTokens,
+						cacheWrite5mTokens: event.cacheWrite5mTokens,
+						cacheWrite1hTokens: event.cacheWrite1hTokens,
+					},
+					event.costUsd,
+				)
+			: { carryUsd: 0, newUsd: 0 };
+
+		return {
+			timestamp: event.timestamp,
+			isSubagent: event.isSubagent,
+			priced: event.priced,
+			costUsd: event.priced ? event.costUsd : 0,
+			carryUsd: split.carryUsd,
+			newUsd: split.newUsd,
+		};
+	});
 }
 
 /**

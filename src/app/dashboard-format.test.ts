@@ -6,13 +6,18 @@ import {
 	dayKeyInTimezone,
 	endOfDayInTimezone,
 	evaluateMachineSyncStatus,
+	bucketTurnDollars,
+	buildTurnTimeline,
 	fillMissingBuckets,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
 	formatSavingsStatement,
 	modelMixByDay,
 	monthProgressInTimezone,
+	planTurnBuckets,
 	projectMonthEndCost,
+	type TurnBuckets,
+	type TurnBucketRow,
 	rollUpDailySavings,
 	parseDashboardRange,
 	pivotForChart,
@@ -24,6 +29,11 @@ import {
 	summarizeMonthToDate,
 	subagentCostShare,
 	summarizeUnpricedDays,
+	isMainSeriesEmptyWithSubagentActivity,
+	turnBucketTooltipLabel,
+	turnTimelineDivergenceNote,
+	turnTimelineEmptyStateCopy,
+	turnTimelineTotalUsd,
 } from "./dashboard-format";
 
 test("flags a machine stale when its last contact was more than 12h ago", () => {
@@ -633,6 +643,187 @@ test("planDayBuckets leaves a window of 20 days or fewer at one bare-dated bucke
 	expect(buckets.labels).toHaveLength(20);
 	expect(buckets.labels[0]).toBe("2026-08-01");
 	expect(buckets.labels[19]).toBe("2026-08-20");
+});
+
+test("planTurnBuckets leaves a session of 20 turns or fewer at one bucket per turn (card #161 Step 7)", () => {
+	const buckets = planTurnBuckets(20);
+
+	expect(buckets.labels).toHaveLength(20);
+	expect(buckets.labels[0]).toBe("Turn 1");
+	expect(buckets.labels[19]).toBe("Turn 20");
+});
+
+test("planTurnBuckets caps a long session at 20 buckets, putting the leftover turn on the OLDEST bucket (card #161 Step 7)", () => {
+	// 21 turns at a 2-turn span leaves one over — same shape as planDayBuckets's 21-day case.
+	const buckets = planTurnBuckets(21);
+
+	expect(buckets.labels).toHaveLength(11);
+	expect(buckets.labels[0]).toBe("Turn 1");
+	expect(buckets.labels[10]).toBe("Turns 20–21");
+});
+
+test("bucketTurnDollars sums the underlying dollars per bucket, never averages per-turn shares (card #161 Step 7, D7)", () => {
+	const buckets: TurnBuckets = {
+		labels: ["Turns 1–2", "Turn 3"],
+		labelOf: new Map([
+			[0, "Turns 1–2"],
+			[1, "Turns 1–2"],
+			[2, "Turn 3"],
+		]),
+	};
+	const rows = [
+		{ turnIndex: 0, carryUsd: 1, newUsd: 2, priced: true },
+		{ turnIndex: 1, carryUsd: 3, newUsd: 4, priced: true },
+		{ turnIndex: 2, carryUsd: 5, newUsd: 6, priced: true },
+	];
+
+	const result = bucketTurnDollars(rows, buckets);
+
+	expect(result).toStrictEqual([
+		{ turnBucket: "Turns 1–2", carryUsd: 4, newUsd: 6, unpricedEventCount: 0 },
+		{ turnBucket: "Turn 3", carryUsd: 5, newUsd: 6, unpricedEventCount: 0 },
+	]);
+});
+
+test("bucketTurnDollars counts a bucket's unpriced turns, so a bucket mixing priced and unpriced turns keeps a lower-bound marking instead of reading as complete (card #161 F2 adversarial Fix C / R38)", () => {
+	const buckets: TurnBuckets = {
+		labels: ["Turn 1"],
+		labelOf: new Map([
+			[0, "Turn 1"],
+			[1, "Turn 1"],
+			[2, "Turn 1"],
+		]),
+	};
+	const rows = [
+		{ turnIndex: 0, carryUsd: 1, newUsd: 1, priced: true },
+		{ turnIndex: 1, carryUsd: 0, newUsd: 0, priced: false },
+		{ turnIndex: 2, carryUsd: 0, newUsd: 0, priced: false },
+	];
+
+	const result = bucketTurnDollars(rows, buckets);
+
+	expect(result).toStrictEqual([{ turnBucket: "Turn 1", carryUsd: 1, newUsd: 1, unpricedEventCount: 2 }]);
+});
+
+test("turnBucketTooltipLabel appends the D17 lower-bound suffix when the bucket has unpriced turns (card #161 F2 adversarial Fix C / R38)", () => {
+	expect(turnBucketTooltipLabel("Turn 5", 0)).toBe("Turn 5");
+	expect(turnBucketTooltipLabel("Turn 5", 1)).toBe("Turn 5 (1 event unpriced)");
+	expect(turnBucketTooltipLabel("Turns 1–3", 2)).toBe("Turns 1–3 (2 events unpriced)");
+});
+
+test("bucketTurnDollars fills a bucket with no rows with zero, so a subset (e.g. subagent turns) shares the full plan's bucket count with the main series (card #161 Step 7/8)", () => {
+	const buckets: TurnBuckets = {
+		labels: ["Turns 1–2", "Turn 3"],
+		labelOf: new Map([
+			[0, "Turns 1–2"],
+			[1, "Turns 1–2"],
+			[2, "Turn 3"],
+		]),
+	};
+	// Only turn 0 is in this subset — mirrors a session whose subagent turns are a small fraction
+	// of the whole sequence.
+	const rows = [{ turnIndex: 0, carryUsd: 1, newUsd: 2, priced: true }];
+
+	const result = bucketTurnDollars(rows, buckets);
+
+	expect(result).toStrictEqual([
+		{ turnBucket: "Turns 1–2", carryUsd: 1, newUsd: 2, unpricedEventCount: 0 },
+		{ turnBucket: "Turn 3", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 },
+	]);
+});
+
+test("buildTurnTimeline separates subagent turns into their own series, aligned to the main series' bucket layout (card #161 Step 8, D6)", () => {
+	const turns = [
+		{ isSubagent: false, carryUsd: 1, newUsd: 1, priced: true },
+		{ isSubagent: true, carryUsd: 5, newUsd: 5, priced: true },
+		{ isSubagent: false, carryUsd: 2, newUsd: 2, priced: true },
+	];
+
+	const timeline = buildTurnTimeline(turns);
+
+	expect(timeline.labels).toEqual(["Turn 1", "Turn 2", "Turn 3"]);
+	expect(timeline.main).toStrictEqual([
+		{ turnBucket: "Turn 1", carryUsd: 1, newUsd: 1, unpricedEventCount: 0 },
+		{ turnBucket: "Turn 2", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 },
+		{ turnBucket: "Turn 3", carryUsd: 2, newUsd: 2, unpricedEventCount: 0 },
+	]);
+	expect(timeline.subagent).toStrictEqual([
+		{ turnBucket: "Turn 1", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 },
+		{ turnBucket: "Turn 2", carryUsd: 5, newUsd: 5, unpricedEventCount: 0 },
+		{ turnBucket: "Turn 3", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 },
+	]);
+});
+
+test("a session with zero subagent turns still gets a full-length all-zero subagent series, never omitted or folded into main (card #161 Step 8)", () => {
+	const turns = [
+		{ isSubagent: false, carryUsd: 1, newUsd: 1, priced: true },
+		{ isSubagent: false, carryUsd: 2, newUsd: 2, priced: true },
+	];
+
+	const timeline = buildTurnTimeline(turns);
+
+	expect(timeline.subagent).toStrictEqual([
+		{ turnBucket: "Turn 1", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 },
+		{ turnBucket: "Turn 2", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 },
+	]);
+	// The main series is unaffected by there being no subagent turns.
+	expect(timeline.main).toStrictEqual([
+		{ turnBucket: "Turn 1", carryUsd: 1, newUsd: 1, unpricedEventCount: 0 },
+		{ turnBucket: "Turn 2", carryUsd: 2, newUsd: 2, unpricedEventCount: 0 },
+	]);
+});
+
+test("turnTimelineTotalUsd sums every bar's dollars across both series (card #161 F2 adversarial Fix A / R51)", () => {
+	const timeline = {
+		labels: ["Turn 1"],
+		main: [{ turnBucket: "Turn 1", carryUsd: 1, newUsd: 2, unpricedEventCount: 0 }],
+		subagent: [{ turnBucket: "Turn 1", carryUsd: 0.5, newUsd: 0.5, unpricedEventCount: 0 }],
+	};
+
+	expect(turnTimelineTotalUsd(timeline)).toBe(4);
+});
+
+test("turnTimelineDivergenceNote is null when the chart's total agrees with the session's stored total (card #161 F2 adversarial Fix A / R51)", () => {
+	const timeline = {
+		labels: ["Turn 1"],
+		main: [{ turnBucket: "Turn 1", carryUsd: 1, newUsd: 4, unpricedEventCount: 0 }],
+		subagent: [{ turnBucket: "Turn 1", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 }],
+	};
+
+	expect(turnTimelineDivergenceNote(timeline, 5)).toBeNull();
+});
+
+test("turnTimelineDivergenceNote names the gap when D11's clamp made the chart's total read higher than the session's stored total (card #161 F2 adversarial Fix A / R51)", () => {
+	// Mirrors a real repriced-turn scenario: a turn's re-priced carry (1.50) now exceeds its cost
+	// frozen at write time (1.00), so newUsd clamps to 0 and the bar sums to 1.50, not 1.00.
+	const timeline = {
+		labels: ["Turn 1"],
+		main: [{ turnBucket: "Turn 1", carryUsd: 1.5, newUsd: 0, unpricedEventCount: 0 }],
+		subagent: [{ turnBucket: "Turn 1", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 }],
+	};
+
+	const note = turnTimelineDivergenceNote(timeline, 1);
+
+	expect(note).not.toBeNull();
+	expect(note).toContain("$1.50"); // the chart's own total
+	expect(note).toContain("$1.00"); // the session's stored "Total cost" figure
+});
+
+test("turnTimelineEmptyStateCopy distinguishes an all-unpriced session from one that genuinely cost nothing, and never claims a range this page doesn't have (card #161 F2 adversarial Fix D / R37)", () => {
+	expect(turnTimelineEmptyStateCopy(5, 5)).toBe("Every turn in this session is unpriced — nothing to chart yet.");
+	expect(turnTimelineEmptyStateCopy(5, 0)).toBe("Every turn in this session cost $0.00.");
+});
+
+test("isMainSeriesEmptyWithSubagentActivity is true only when the main series is entirely zero AND the subagent series carries real dollars (card #161 F2 adversarial Fix F / R45)", () => {
+	const allZero: TurnBucketRow[] = [{ turnBucket: "Turn 1", carryUsd: 0, newUsd: 0, unpricedEventCount: 0 }];
+	const hasDollars: TurnBucketRow[] = [{ turnBucket: "Turn 1", carryUsd: 1, newUsd: 1, unpricedEventCount: 0 }];
+
+	// An all-subagent session: main is empty, subagent is not.
+	expect(isMainSeriesEmptyWithSubagentActivity(allZero, hasDollars)).toBe(true);
+	// The ordinary case: main has real dollars too.
+	expect(isMainSeriesEmptyWithSubagentActivity(hasDollars, hasDollars)).toBe(false);
+	// Nothing in the whole session is priced yet — Fix D's empty state owns this case, not Fix F's note.
+	expect(isMainSeriesEmptyWithSubagentActivity(allZero, allZero)).toBe(false);
 });
 
 test("fillMissingBuckets gives a bucket with no recorded work its own placeholder, so it holds its place on the axis (D24)", () => {

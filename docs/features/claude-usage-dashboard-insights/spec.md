@@ -17,6 +17,8 @@ The sync half (hooks, mapper, `/api/sync`, storage) is a separate feature with i
 
 Every totals-table row also links into `/split/[dimension]/[value]`, a drill-down with its own spec at [`../split-drilldown/spec.md`](../split-drilldown/spec.md). Two things here changed for it: `dashboardHref` is now a delegate to `pathHref`, so the shared pager stays on whichever page renders it; and a repository's label is resolved per WINDOW rather than per day — see the repoKey section below.
 
+A session's own page (`/session/[id]`) is otherwise out of this file's scope, but the turn-by-turn carry-vs-new timeline card #161 added there (`turn-timeline.ui.tsx`) follows the same pricing and bucketing rules as the six cards above, so it is covered in the Invariants below rather than getting a page of its own.
+
 ## Invariants
 
 Each of these was expensive to establish. Undoing one silently reintroduces what it was built to prevent — silently, in every case, which is why they are written down.
@@ -76,6 +78,8 @@ That bucket was 54.8% of all spend, and the two tabs were consequently identical
 
 `src/app/dashboard-format.ts` compiles into the **client** bundle. It receives already-priced dollars and must never import `src/parser/pricing.mjs`, which would ship the whole price table to the browser. The one savings helper lives in `pricing.mjs`; the multipliers stay private to it.
 
+The same rule holds for the turn-timeline functions card #161 added to `dashboard-format.ts` (`planTurnBuckets`, `bucketTurnDollars`, `buildTurnTimeline`, `turnTimelineTotalUsd`, `turnTimelineDivergenceNote`) — they only ever combine `carryUsd`/`newUsd` dollars a server component already computed; none of them prices anything or imports `pricing.mjs`.
+
 ### Absent days stay visible; a share of nothing is a break, not a zero
 
 Gap fill only ever **inserts** — overwriting a present day would erase its `unpricedEventCount` and delete a lower-bound warning. Filled rows carry an explicit `eventCount: 0`, which is what lets the "no data in this range" guards mean anything once a dead window is 30 zero rows rather than an empty list. A day with no priced spend has no defined model mix and renders as a break; a flat zero would claim the models were not used.
@@ -113,6 +117,20 @@ Applies to **all four** per-day charts — cost split, model mix, cache savings,
 Leftover days land on the **oldest** bucket, never the newest. The eye reads the right edge as "now", so a short final bar looks like spending collapsed when it only means the bucket is young.
 
 A multi-day bucket labels itself `first…last`, which is what the tooltip shows; the axis tick keeps only the first day, because 20 full range labels collide into exactly the mess bucketing exists to remove.
+
+### A turn's cost splits into carry and new work, and the split is a residual by construction
+
+Card #161 added a per-session timeline (`/session/[id]`) showing, turn by turn, how much of each turn's cost re-paid existing cached context ("carry") versus bought new work ("new"). `turnCarrySplit` (`src/parser/pricing.mjs`) computes carry from **cache reads AND cache writes** — `cacheReadTokens × 0.1 + cacheWrite5mTokens × 1.25 + cacheWrite1hTokens × 2.0`, all at the turn's own input price (D3). Reads alone would miss the single most expensive thing that can happen in a long session: when a cache entry is invalidated, the context has to be re-written from scratch, and that re-payment would file under "new work" and hide precisely the event this chart exists to expose — `src/status.mjs` already treats a cache miss as warning-worthy, so this treats it as the same pathology, not progress.
+
+`new` is **not** computed independently — it is the residual, `costUsd − carry`, clamped at zero (D11). Two independently-computed halves were tried and rejected: over 2,000,000 randomized realistic inputs, the independent form missed `costUsd` in ~29.6% of cases (at ~1e-15, pure floating point), and even `costUsd − carry` without the clamp missed in ~5.2%. As a *definition* the residual sums exactly — `carry + new === costUsd` holds by construction, not by luck — so no epsilon is used or needed anywhere a test asserts it, matching this repo's `toBe()`/`toStrictEqual()` convention for money. The clamp also covers a second, separate case: cost is frozen at write time but carry is recomputed at read time from the current price table, so a price correction can push a turn's re-priced carry above what it actually cost — the clamp keeps that from rendering as a negative bar.
+
+**The chart's own total can therefore read higher than the session's "Total cost" line above it, and that divergence is surfaced explicitly rather than silently reconciled.** `turnTimelineDivergenceNote` compares the sum of every bar's `carryUsd + newUsd` against the session's own stored total and, when they disagree, renders a plain-English note under the chart naming both figures. Re-deriving "Total cost" from the clamped splits instead was considered and rejected: it would change what that figure means everywhere else it appears on the page — from "what was actually billed" (frozen at write time, an existing invariant) to "what the current price table implies" — which reopens the exact definition D11 already settled. Leaving the two numbers to disagree with no explanation was the other rejected option.
+
+### A session's turn timeline buckets by turn ordinal, not by day
+
+Turns bucket the same way days do (see *Every per-day chart caps at 20 bars* above) — `planTurnBuckets` mirrors `planDayBuckets`'s span/remainder algorithm, but keyed on a turn's ordinal position in the session rather than a calendar day, since turns have no gaps to fill. The cap is still 20 bars; any remainder still lands on the OLDEST bucket; a bucket's dollars are still summed and every share recomputed from those sums, never averaged from per-turn ratios.
+
+Subagent turns are their own series, bucketed against the SAME plan as the main series (D6) so bucket N means the same slice of the session in both — a **turn-order axis**, not a wall-clock one, since bucketing is by ordinal position, never by timestamp. A bucket with no turns from a given series is zero-filled, never omitted, so an entirely-main or entirely-subagent session still renders a full-length series for the other.
 
 ## Things a test cannot tell you here
 

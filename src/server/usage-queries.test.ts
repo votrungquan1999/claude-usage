@@ -1,6 +1,6 @@
 import { MongoMemoryServer } from "mongodb-memory-server";
-import { type Db, MongoClient } from "mongodb";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { Collection, type Db, MongoClient } from "mongodb";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 
 import {
 	recordMachineSync,
@@ -17,6 +17,7 @@ import {
 	dimensionValueDomain,
 	earliestEventTimestamp,
 	getSessionBreakdown,
+	getSessionTurns,
 	listSessions,
 	machineSyncStatus,
 	SessionSortOrder,
@@ -360,6 +361,213 @@ test("a model row's subagent-cost figure carries its own unpriced count, scoped 
 
 	expect(row?.unpricedEventCount).toBe(2); // whole-row count: both unpriced events (main + subagent)
 	expect(row?.subagentUnpricedEventCount).toBe(1); // scoped count: only the subagent one
+});
+
+test("a session's turns come back one row per event, ordered by when they happened, each carrying its own cost (card #161 Step 5)", async () => {
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_turn_c",
+			messageId: "msg_turn_c",
+			sessionId: "session-turns-order",
+			timestamp: new Date("2026-08-01T12:00:00.000Z"),
+			costUsd: 3,
+		}),
+		event({
+			requestId: "req_turn_a",
+			messageId: "msg_turn_a",
+			sessionId: "session-turns-order",
+			timestamp: new Date("2026-08-01T10:00:00.000Z"),
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_turn_b",
+			messageId: "msg_turn_b",
+			sessionId: "session-turns-order",
+			timestamp: new Date("2026-08-01T11:00:00.000Z"),
+			costUsd: 2,
+		}),
+	]);
+
+	const turns = await getSessionTurns(db, "session-turns-order");
+
+	expect(turns.map((turn) => turn.costUsd)).toEqual([1, 2, 3]);
+});
+
+test("an unpriced turn's cost reads as zero, not its untrusted stored value (card #161 Step 5, matching the $cond: [priced] convention)", async () => {
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_turn_unpriced",
+			messageId: "msg_turn_unpriced",
+			sessionId: "session-turns-unpriced",
+			priced: false,
+			// Non-zero on purpose — same reasoning as the existing session-unpriced test: a zero
+			// here would pass even without a real priced guard.
+			costUsd: 9.99,
+		}),
+	]);
+
+	const turns = await getSessionTurns(db, "session-turns-unpriced");
+
+	expect(turns[0]?.costUsd).toBe(0);
+});
+
+test("a session's turns show carry and new work split from each turn's own cost (card #161 Step 6)", async () => {
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_turn_split",
+			messageId: "msg_turn_split",
+			sessionId: "session-turns-split",
+			model: "claude-opus-5",
+			timestamp: new Date("2026-08-01T10:00:00.000Z"),
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 1_000_000,
+			cacheWrite1hTokens: 1_000_000,
+			costUsd: 46.75,
+		}),
+	]);
+
+	const turns = await getSessionTurns(db, "session-turns-split");
+
+	expect(turns[0]).toEqual(expect.objectContaining({ carryUsd: 16.75, newUsd: 30 }));
+});
+
+test("two turns straddling claude-sonnet-5's price change are each split at their own turn's rate, never a session-average one (card #161 Step 6)", async () => {
+	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_turn_before_reprice",
+			messageId: "msg_turn_before_reprice",
+			sessionId: "session-turns-reprice",
+			model: "claude-sonnet-5",
+			// Well clear of the D6a boundary test's own [2026-08-31T17:00Z, 2026-09-01T16:59Z]
+			// range above — that query is whole-collection-scoped (no sessionId filter), so an
+			// event here landing inside it would inflate that test's totals.
+			timestamp: new Date("2026-08-25T10:00:00.000Z"), // $2/MTok intro rate
+			...tokens,
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_turn_after_reprice",
+			messageId: "msg_turn_after_reprice",
+			sessionId: "session-turns-reprice",
+			model: "claude-sonnet-5",
+			timestamp: new Date("2026-09-10T10:00:00.000Z"), // $3/MTok list rate
+			...tokens,
+			costUsd: 1,
+		}),
+	]);
+
+	const turns = await getSessionTurns(db, "session-turns-reprice");
+
+	// $0.20 carry before the reprice, $0.30 after — a session-average rate would give both turns
+	// the same figure.
+	expect(turns.map((turn) => turn.carryUsd)).toEqual([0.2, 0.3]);
+});
+
+test("an unpriced turn contributes zero to both carry and new, matching the $cond: [priced] convention (card #161 Step 6)", async () => {
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_turn_split_unpriced",
+			messageId: "msg_turn_split_unpriced",
+			sessionId: "session-turns-split-unpriced",
+			priced: false,
+			cacheReadTokens: 1_000_000,
+			cacheWrite5mTokens: 1_000_000,
+			cacheWrite1hTokens: 1_000_000,
+			// Non-zero on purpose, same reasoning as the other unpriced tests in this file: a zero
+			// here would pass even without a real guard.
+			costUsd: 9.99,
+		}),
+	]);
+
+	const turns = await getSessionTurns(db, "session-turns-split-unpriced");
+
+	expect(turns[0]).toEqual(expect.objectContaining({ carryUsd: 0, newUsd: 0 }));
+});
+
+test("a session's turns say which one came from a subagent, so the two can be told apart downstream (card #161 D6/Step 5)", async () => {
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_turn_main",
+			messageId: "msg_turn_main",
+			sessionId: "session-turns-subagent",
+			timestamp: new Date("2026-08-01T10:00:00.000Z"),
+			isSubagent: false,
+		}),
+		event({
+			requestId: "req_turn_sub",
+			messageId: "msg_turn_sub",
+			sessionId: "session-turns-subagent",
+			timestamp: new Date("2026-08-01T11:00:00.000Z"),
+			isSubagent: true,
+		}),
+	]);
+
+	const turns = await getSessionTurns(db, "session-turns-subagent");
+
+	expect(turns.map((turn) => turn.isSubagent)).toEqual([false, true]);
+});
+
+test("a turn says whether it is priced, so a bucket mixing priced and unpriced turns can keep its lower-bound marking (card #161 F2 adversarial Fix C / R38)", async () => {
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_turn_priced_flag",
+			messageId: "msg_turn_priced_flag",
+			sessionId: "session-turns-priced-flag",
+			timestamp: new Date("2026-08-01T10:00:00.000Z"),
+			priced: true,
+		}),
+		event({
+			requestId: "req_turn_priced_flag_2",
+			messageId: "msg_turn_priced_flag_2",
+			sessionId: "session-turns-priced-flag",
+			timestamp: new Date("2026-08-01T11:00:00.000Z"),
+			priced: false,
+		}),
+	]);
+
+	const turns = await getSessionTurns(db, "session-turns-priced-flag");
+
+	expect(turns.map((turn) => turn.priced)).toEqual([true, false]);
+});
+
+test("getSessionTurns projects only the fields it actually uses instead of pulling full documents across the wire (card #161 F2 adversarial Fix B / R46)", async () => {
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_turn_projection",
+			messageId: "msg_turn_projection",
+			sessionId: "session-turns-projection",
+		}),
+	]);
+
+	const findSpy = vi.spyOn(Collection.prototype, "find");
+	let calls: (typeof findSpy)["mock"]["calls"];
+	try {
+		await getSessionTurns(db, "session-turns-projection");
+		// Captured before mockRestore() below — restoring also clears mock.calls.
+		calls = [...findSpy.mock.calls];
+	} finally {
+		findSpy.mockRestore();
+	}
+
+	expect(calls).toHaveLength(1);
+	const [, options] = calls[0] ?? [];
+	// A 5,000-turn session must not pull requestId/messageId/projectSlug/etc — only what
+	// getSessionTurns' own mapper reads (R46). Not a row/turn cap: every matching document is
+	// still fetched, just thinner.
+	expect(options).toMatchObject({
+		projection: {
+			_id: 0,
+			model: 1,
+			timestamp: 1,
+			cacheReadTokens: 1,
+			cacheWrite5mTokens: 1,
+			cacheWrite1hTokens: 1,
+			costUsd: 1,
+			priced: 1,
+			isSubagent: 1,
+		},
+	});
 });
 
 test("a null projectSlug (a rogue/older client bypassing the mapper's allowlist) renders as explicitly unattributed, never a blank/null dimensionValue (absent-data at ingest)", async () => {

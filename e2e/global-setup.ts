@@ -9,6 +9,7 @@ import {
 } from "../src/server/usage-store";
 import { E2E_DB_NAME, E2E_MONGODB_URI } from "./e2e.env";
 import { buildCorpus, MACHINE_IDS } from "./fixtures/corpus";
+import { buildSessionTimelineFixture } from "./fixtures/session-timeline";
 
 /** More than the dashboard's 12h staleness threshold, so this machine reads as stale. */
 const STALE_HOURS_AGO = 13;
@@ -43,6 +44,10 @@ export default async function globalSetup(): Promise<void> {
 		await db.collection(USAGE_EVENTS_COLLECTION).deleteMany({});
 		await ensureUsageIndexes(db);
 		await saveUsageEvents(db, buildCorpus(now));
+		// F2's own isolated fixture (card #161 D12) — same collection, same wipe above, so it
+		// cannot leak between runs without any wipe logic of its own. Never merged into
+		// buildCorpus/corpus.ts, so no existing spec's literal totals are touched.
+		await saveUsageEvents(db, buildSessionTimelineFixture(now));
 
 		// Same discipline as usage_events above (card #161): dropped every run, and timestamps built
 		// relative to `now` rather than a fixed clock — corpus.ts's own history records exactly this

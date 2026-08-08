@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { cacheSavings, isPricedModel, turnCost } from "../src/parser/pricing.mjs";
+import { cacheSavings, isPricedModel, turnCarrySplit, turnCost } from "../src/parser/pricing.mjs";
 
 test("reports whether a model has a known price, so $0 is never mistaken for cheap", () => {
 	expect(isPricedModel("claude-opus-5[1m]")).toBe(true);
@@ -113,4 +113,44 @@ test("cache savings follow the price in effect at the time, not today's price", 
 
 	expect(cacheSavings("claude-sonnet-5", "2026-08-31T18:00:00.000Z", tokens).grossUsd).toBe(1.8);
 	expect(cacheSavings("claude-sonnet-5", "2026-09-01T10:00:00.000Z", tokens).grossUsd).toBe(2.7);
+});
+
+test("splits a turn's cost into carry (cache reads/writes at D3's multipliers) and new (the residual), summing back to the exact cost with no epsilon (card #161 D3/D11)", () => {
+	// Same shape as the "prices each cache tier at its own multiplier" turnCost test: 1 MTok in
+	// every cache tier, claude-opus-5 at $5/MTok input, $46.75 total turn cost.
+	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 1_000_000, cacheWrite1hTokens: 1_000_000 };
+	const costUsd = 46.75;
+
+	const split = turnCarrySplit("claude-opus-5", "2026-08-01T10:00:00.000Z", tokens, costUsd);
+
+	// $0.50 read (0.1x) + $6.25 5m (1.25x) + $10 1h (2.0x) = $16.75 carry; $30 new is the residual.
+	expect(split).toStrictEqual({ carryUsd: 16.75, newUsd: 30 });
+	expect(split.carryUsd + split.newUsd).toBe(costUsd);
+});
+
+test("new is clamped at zero, never negative, when carry alone would exceed the turn's frozen cost (card #161 D11 — a price-table correction can push carry above cost)", () => {
+	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 1_000_000, cacheWrite1hTokens: 1_000_000 };
+	// $16.75 of carry (same tokens as above), but costUsd frozen at only $1 — carry alone exceeds it.
+	const split = turnCarrySplit("claude-opus-5", "2026-08-01T10:00:00.000Z", tokens, 1);
+
+	expect(split.newUsd).toBe(0);
+});
+
+test("carry is priced at the turn's own timestamp, not today's rate (card #161 — claude-sonnet-5 reprices 2026-09-01, never sum-then-price)", () => {
+	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
+
+	// $2/MTok intro rate: 1_000_000 * 0.1 * 2 / 1e6 = $0.20 carry.
+	expect(turnCarrySplit("claude-sonnet-5", "2026-08-31T23:00:00.000Z", tokens, 1).carryUsd).toBe(0.2);
+	// $3/MTok list rate: 1_000_000 * 0.1 * 3 / 1e6 = $0.30 carry.
+	expect(turnCarrySplit("claude-sonnet-5", "2026-09-01T00:00:00.000Z", tokens, 1).carryUsd).toBe(0.3);
+});
+
+test("an unknown model contributes zero to both carry and new, even if a stale costUsd was passed in (card #161 — matches turnCost/cacheSavings' own unpriced guard)", () => {
+	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
+
+	// costUsd deliberately non-zero and non-guarded by the caller, to prove the function itself
+	// never lets an unpriced model's untrusted cost leak into "new work".
+	const split = turnCarrySplit("claude-something-unreleased", "2026-08-01T10:00:00.000Z", tokens, 9.99);
+
+	expect(split).toStrictEqual({ carryUsd: 0, newUsd: 0 });
 });

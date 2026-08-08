@@ -84,6 +84,35 @@ export function turnCost(turn) {
 }
 
 /**
+ * Splits a turn's already-priced cost into carry (re-paying existing context) and new (buying new
+ * work) — a residual, not two independently priced halves (card #161 D11): summing three
+ * independently-rounded JS expressions misses `costUsd` by ~1e-15 in ~30% of realistic cases, which
+ * would make a `toBe()` assertion flaky on fixture choice. `newUsd` is defined as `costUsd - carryUsd`,
+ * clamped at zero — the clamp also covers a price-table correction pushing carry above a cost frozen
+ * at write time (R35/R36).
+ *
+ * Not `cacheSavings` — that answers a different question (what caching saved vs. not caching at
+ * all); this answers what already-billed dollars were re-paying context vs. buying new work.
+ *
+ * @param {string} model
+ * @param {string} timestamp - ISO-8601 UTC; priced at THIS turn's own rate, never a session average
+ * @param {{cacheReadTokens: number, cacheWrite5mTokens: number, cacheWrite1hTokens: number}} tokens
+ * @param {number} costUsd - the turn's already-priced total (e.g. from `turnCost`)
+ * @returns {{carryUsd: number, newUsd: number}}
+ */
+export function turnCarrySplit(model, timestamp, tokens, costUsd) {
+	const price = priceAt(model, timestamp);
+	if (!price) return { carryUsd: 0, newUsd: 0 };
+
+	const carryUsd =
+		((tokens.cacheReadTokens * CACHE_READ + tokens.cacheWrite5mTokens * CACHE_WRITE_5M + tokens.cacheWrite1hTokens * CACHE_WRITE_1H) *
+			price.input) /
+		1_000_000;
+
+	return { carryUsd, newUsd: Math.max(0, costUsd - carryUsd) };
+}
+
+/**
  * What caching saved, in USD, on one model's tokens at one point in time.
  *
  * `grossUsd` is the saving from reads alone: a cache read bills at `CACHE_READ` times the base

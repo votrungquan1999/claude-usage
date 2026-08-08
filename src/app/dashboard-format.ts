@@ -391,6 +391,222 @@ export function dayKeyInTimezone(date: Date, timeZone: string): string {
 	return formatInstantInTimezone(date, timeZone).slice(0, 10);
 }
 
+/**
+ * A session's turns grouped into at most `MAX_CHART_BARS` buckets, keyed by ORDINAL position in the
+ * turn sequence rather than a calendar day (card #161 Step 7) — mirrors `DayBuckets`/`planDayBuckets`'s
+ * span/remainder algorithm, but turns have no gaps to fill: every bucket a plan produces already
+ * holds at least one real turn, so there is no `fillMissingBuckets` counterpart.
+ *
+ * Deliberately NOT reusing `relabelRowsToBuckets`/`fillMissingBuckets`: both hardcode a field
+ * literally named `day` in their bodies (verified by reading them), and forcing a turn-range label
+ * into a field called `day` would violate this repo's own type-separation convention (a `day` field
+ * that does not hold a calendar day). Widening their generic constraint was the other option, but
+ * that touches shared code with 4+ other consumers across the dashboard for a mechanism this feature
+ * is the only caller of — a small parallel function (`bucketTurnDollars`, below) is the smaller,
+ * safer surface.
+ */
+export interface TurnBuckets {
+	/** Each bucket's label, oldest first — "Turn 1" for a single-turn bucket, "Turns 1–25" otherwise
+	 * (1-based, human-facing). */
+	labels: string[];
+	/** Which bucket (by label) the turn at this 0-based ordinal position falls into. */
+	labelOf: Map<number, string>;
+}
+
+/**
+ * Plans a session's turn-ordinal buckets, capped at `MAX_CHART_BARS` (card #161 Step 7). Any
+ * remainder lands on the OLDEST bucket (turn ordinal 0), for the same reason `planDayBuckets` does:
+ * the eye reads the right edge as "now", so a short final bar looks like the session's pace
+ * collapsed when it only means the bucket is young.
+ *
+ * @param turnCount - how many turns the session has
+ */
+export function planTurnBuckets(turnCount: number): TurnBuckets {
+	const span = Math.max(1, Math.ceil(turnCount / MAX_CHART_BARS));
+	const labels: string[] = [];
+	const labelOf = new Map<number, string>();
+
+	// The first bucket absorbs the remainder; every one after it is full width — same shape as
+	// planDayBuckets, just walking turn ordinals instead of calendar days.
+	let size = turnCount % span || span;
+	for (let index = 0; index < turnCount; index += size, size = span) {
+		const end = Math.min(index + size, turnCount);
+		const label = turnBucketLabel(index + 1, end);
+		labels.push(label);
+		for (let turnIndex = index; turnIndex < end; turnIndex++) labelOf.set(turnIndex, label);
+	}
+
+	return { labels, labelOf };
+}
+
+/**
+ * A turn bucket's label. A single-turn bucket keeps a bare "Turn N"; a multi-turn one names both
+ * ends (1-based, inclusive) — mirrors `bucketLabel`'s day-range naming.
+ *
+ * @param firstTurn - the bucket's oldest turn, 1-based
+ * @param lastTurn - the bucket's newest turn, 1-based
+ */
+function turnBucketLabel(firstTurn: number, lastTurn: number): string {
+	return firstTurn === lastTurn ? `Turn ${firstTurn}` : `Turns ${firstTurn}–${lastTurn}`;
+}
+
+/**
+ * A turn bucket's tooltip label, carrying the same D17 "(N events unpriced)" lower-bound suffix
+ * `formatLowerBoundCost` already appends to every other cost figure on this page (card #161 F2
+ * adversarial Fix C / R38) — a bucket with unpriced turns must not read as a complete figure just
+ * because the chart itself has no other place to say so.
+ *
+ * @param turnBucket - the bucket's own label (e.g. "Turn 5", "Turns 1–3")
+ * @param unpricedEventCount - unpriced turns folded into this bucket (main + subagent combined)
+ */
+export function turnBucketTooltipLabel(turnBucket: string, unpricedEventCount: number): string {
+	if (unpricedEventCount === 0) return turnBucket;
+	const noun = unpricedEventCount === 1 ? "event" : "events";
+	return `${turnBucket} (${unpricedEventCount} ${noun} unpriced)`;
+}
+
+/** One turn bucket's summed dollars (card #161 Step 7). */
+export interface TurnBucketRow {
+	turnBucket: string;
+	carryUsd: number;
+	newUsd: number;
+	/** How many of this bucket's turns are unpriced (card #161 F2 adversarial Fix C / R38) — the
+	 * same D17 lower-bound signal `ChartDayRow.unpricedEventCount` already carries for every other
+	 * chart on this dashboard, so a bucket mixing priced and unpriced turns cannot silently read as
+	 * a complete figure. */
+	unpricedEventCount: number;
+}
+
+/**
+ * Sums `carryUsd`/`newUsd` into each turn's bucket (card #161 Step 7) — bucket the underlying
+ * dollars and recompute any share from those sums, never average per-turn ratios (the same rule
+ * `relabelRowsToBuckets` states for calendar days, at `:158-159`).
+ *
+ * Rows carry their own `turnIndex` (position in the FULL turn sequence, not the filtered array's
+ * own index) so two different subsets of the same session's turns — e.g. main vs. subagent — can be
+ * bucketed against the SAME `TurnBuckets` plan and land in matching buckets by shared position.
+ *
+ * @param rows - a subset of a session's turns, each carrying its original ordinal position
+ * @param buckets - the session's turn-bucket plan, from `planTurnBuckets`
+ */
+export function bucketTurnDollars(
+	rows: { turnIndex: number; carryUsd: number; newUsd: number; priced: boolean }[],
+	buckets: TurnBuckets,
+): TurnBucketRow[] {
+	const byLabel = new Map<string, TurnBucketRow>();
+
+	for (const row of rows) {
+		const label = buckets.labelOf.get(row.turnIndex);
+		if (label === undefined) continue;
+		const existing = byLabel.get(label) ?? { turnBucket: label, carryUsd: 0, newUsd: 0, unpricedEventCount: 0 };
+		existing.carryUsd += row.carryUsd;
+		existing.newUsd += row.newUsd;
+		if (!row.priced) existing.unpricedEventCount += 1;
+		byLabel.set(label, existing);
+	}
+
+	return buckets.labels.map((label) => byLabel.get(label) ?? { turnBucket: label, carryUsd: 0, newUsd: 0, unpricedEventCount: 0 });
+}
+
+/** A session's turn timeline, ready for the chart (card #161 Step 8): the shared bucket labels, and
+ * two independently-bucketed series sharing them by position — main-session turns and subagent
+ * turns are separate series on the same turn-order axis (D6), never interleaved or excluded. */
+export interface TurnTimeline {
+	labels: string[];
+	main: TurnBucketRow[];
+	subagent: TurnBucketRow[];
+}
+
+/**
+ * Splits a session's turns into main and subagent series, bucketed against ONE shared plan so a
+ * bucket's position means the same slice of the session in both series (card #161 Step 8).
+ *
+ * @param turns - a session's turns, oldest first (from `getSessionTurns`)
+ */
+export function buildTurnTimeline(
+	turns: { isSubagent: boolean; carryUsd: number; newUsd: number; priced: boolean }[],
+): TurnTimeline {
+	const buckets = planTurnBuckets(turns.length);
+	const indexed = turns.map((turn, turnIndex) => ({ turnIndex, ...turn }));
+
+	return {
+		labels: buckets.labels,
+		main: bucketTurnDollars(
+			indexed.filter((turn) => !turn.isSubagent),
+			buckets,
+		),
+		subagent: bucketTurnDollars(
+			indexed.filter((turn) => turn.isSubagent),
+			buckets,
+		),
+	};
+}
+
+/**
+ * Sum of every bar's dollars across both series (card #161 F2 adversarial Fix A / R51) — always
+ * `>=` the session's own stored `totalCostUsd` (from `getSessionBreakdown`), and strictly greater
+ * exactly when D11's clamp fired for at least one turn: a price-table correction pushed that turn's
+ * re-priced carry above the cost frozen at its own write time, so `carryUsd + newUsd` for that turn
+ * is `carryUsd` itself, not `costUsd`. Never substituted for `totalCostUsd`, which stays the actual
+ * billed figure — this exists only so a caller can detect the two disagreeing.
+ *
+ * @param timeline - a session's bucketed turn timeline, from `buildTurnTimeline`
+ */
+export function turnTimelineTotalUsd(timeline: TurnTimeline): number {
+	return [...timeline.main, ...timeline.subagent].reduce((sum, row) => sum + row.carryUsd + row.newUsd, 0);
+}
+
+/**
+ * Explains a timeline whose total reads higher than the session's own stored total (card #161 F2
+ * adversarial Fix A / R51) — `null` when the two agree, which is every session D11's clamp never
+ * touched. Two contradicting dollar figures on one page is worse than one figure with a caveat, so
+ * this names the gap instead of letting the chart and the "Total cost" line silently disagree.
+ *
+ * @param timeline - a session's bucketed turn timeline
+ * @param totalCostUsd - the session's own stored total, from `getSessionBreakdown`
+ */
+export function turnTimelineDivergenceNote(timeline: TurnTimeline, totalCostUsd: number): string | null {
+	const chartTotalUsd = turnTimelineTotalUsd(timeline);
+	if (chartTotalUsd === totalCostUsd) return null;
+	return (
+		`This chart totals ${formatLowerBoundCost(chartTotalUsd, 0)}, more than the ` +
+		`${formatLowerBoundCost(totalCostUsd, 0)} total above — a price change since these turns ran ` +
+		`raised some turns' re-priced carry above what they were actually billed.`
+	);
+}
+
+/**
+ * The turn timeline's empty-state copy (card #161 F2 adversarial Fix D / R37) — this page has no
+ * range concept (`getSessionTurns`/`getSessionBreakdown` are scoped to one session, never a date
+ * window), so the "No data in this range" wording six other, genuinely range-scoped charts share is
+ * false here. Also tells apart the two ways every bar can be zero: every turn is unpriced (a data
+ * gap) versus every turn genuinely cost nothing (a real, measured zero) — a session with zero turns
+ * never reaches this page (`getSessionBreakdown` 404s first), so `turnCount` is always `>= 1`.
+ *
+ * @param turnCount - how many turns the session has
+ * @param unpricedEventCount - how many of those turns are unpriced
+ */
+export function turnTimelineEmptyStateCopy(turnCount: number, unpricedEventCount: number): string {
+	if (unpricedEventCount >= turnCount) return "Every turn in this session is unpriced — nothing to chart yet.";
+	return "Every turn in this session cost $0.00.";
+}
+
+/**
+ * Whether the main-session series needs an explanatory note (card #161 F2 adversarial Fix F / R45)
+ * — every main bucket at zero while the subagent series carries real dollars means the whole
+ * session ran in a subagent (the parent machine died before syncing, or never ran main turns at
+ * all), not that the chart is broken. Never fires for the R37 all-zero case (Fix D handles that one
+ * with a suppressed chart, not a note on a chart that never renders).
+ *
+ * @param main - the main-session series
+ * @param subagent - the subagent series, bucketed against the same plan
+ */
+export function isMainSeriesEmptyWithSubagentActivity(main: TurnBucketRow[], subagent: TurnBucketRow[]): boolean {
+	const mainHasDollars = main.some((row) => row.carryUsd !== 0 || row.newUsd !== 0);
+	if (mainHasDollars) return false;
+	return subagent.some((row) => row.carryUsd !== 0 || row.newUsd !== 0);
+}
+
 /** Matches the status line's own threshold (Step 2), so both signals agree on what "stale" means. */
 const MACHINE_SYNC_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
 

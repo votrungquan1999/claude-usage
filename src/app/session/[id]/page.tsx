@@ -4,9 +4,10 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getDatabase } from "@/server/database";
-import { DASHBOARD_TIMEZONE, getSessionBreakdown } from "@/server/usage-queries";
+import { DASHBOARD_TIMEZONE, getSessionBreakdown, getSessionTurns } from "@/server/usage-queries";
 
-import { formatInstantInTimezone, formatLowerBoundCost } from "../../dashboard-format";
+import { buildTurnTimeline, formatInstantInTimezone, formatLowerBoundCost, turnTimelineDivergenceNote } from "../../dashboard-format";
+import { TurnTimelineChart } from "./turn-timeline.ui";
 
 interface SessionPageProps {
 	params: Promise<{ id: string }>;
@@ -22,6 +23,10 @@ export default async function SessionPage({ params }: SessionPageProps): Promise
 	const summary = await getSessionBreakdown(db, id);
 
 	if (!summary) notFound();
+
+	const turns = await getSessionTurns(db, id);
+	const timeline = buildTurnTimeline(turns);
+	const timelineDivergenceNote = turnTimelineDivergenceNote(timeline, summary.totalCostUsd);
 
 	return (
 		<main className="grid gap-6 p-8">
@@ -77,6 +82,21 @@ export default async function SessionPage({ params }: SessionPageProps): Promise
 							))}
 						</TableBody>
 					</Table>
+				</CardContent>
+			</Card>
+
+			<Card>
+				<CardHeader>
+					<CardTitle>Carry vs. new work across this session</CardTitle>
+				</CardHeader>
+				<CardContent>
+					<TurnTimelineChart
+						main={timeline.main}
+						subagent={timeline.subagent}
+						turnCount={turns.length}
+						unpricedEventCount={summary.unpricedEventCount}
+					/>
+					{timelineDivergenceNote && <p className="mt-2 text-xs text-muted-foreground">{timelineDivergenceNote}</p>}
 				</CardContent>
 			</Card>
 		</main>
