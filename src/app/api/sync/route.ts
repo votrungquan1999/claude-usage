@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 
 import { verifySecret } from "@/app/api/lib/verify-secret";
 import { getDatabase } from "@/server/database";
-import { ensureUsageIndexes, saveUsageEvents, type UsageEventDocument } from "@/server/usage-store";
+import { ensureUsageIndexes, recordMachineSync, saveUsageEvents, type UsageEventDocument } from "@/server/usage-store";
 
 const REQUIRED_STRING_FIELDS = ["requestId", "messageId", "sessionId", "projectSlug", "model"] as const;
 // `sessionTitle` is the one CONTENT-derived field this API accepts — Claude Code's own name for
@@ -19,6 +19,12 @@ const REQUIRED_NUMBER_FIELDS = [
 	"costUsd",
 ] as const;
 const REQUIRED_BOOLEAN_FIELDS = ["priced", "isSubagent"] as const;
+
+// Set by bin/backfill.mjs only (card #161 D17 Fix A). A plain marker header, not a body field —
+// deliberately kept OUT of the event allowlists above, which are the privacy boundary; a header
+// carries no content and needs no allowlist review. Absence means "live sync": an old client that
+// never sends this header must keep stamping machine_sync_state normally, never silently stop.
+const BACKFILL_HEADER = "x-claude-usage-backfill";
 
 /**
  * True only when a raw wire event is a plain object and every allowlisted field on it is the
@@ -125,6 +131,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 	const db = await getDatabase();
 	await ensureUsageIndexes(db);
 	const accepted = await saveUsageEvents(db, documents);
+
+	// An empty batch (the README's own setup probe, machineId "probe") is not a real sync attempt
+	// and must not mint a permanently-stale machine row (card #161 D13). A backfill run is not
+	// evidence the machine's LIVE sync path is healthy either (card #161 D17 Fix A / R3) — it can
+	// run offline, on demand, long after whatever broke the live path; stamping this record from a
+	// backfill would silence the dashboard alarm for up to 12h on exactly the broken machine it
+	// exists to catch. The events themselves are still saved either way.
+	const isBackfill = request.headers.get(BACKFILL_HEADER) !== null;
+	if (events.length > 0 && !isBackfill) await recordMachineSync(db, machineId, accepted);
 
 	return NextResponse.json({ accepted, rejected }, { status: 200 });
 }

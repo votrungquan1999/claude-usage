@@ -3,6 +3,7 @@ import type {
 	DailyEfficiencyByModelRow,
 	DailyEfficiencyRow,
 	DateRange,
+	MachineSyncStatusRow,
 } from "@/server/usage-queries";
 
 import { DEFAULT_SPLIT_TAB, SplitTab } from "./cost-split-view/cost-split-view.type";
@@ -388,6 +389,63 @@ export function formatInstantInTimezone(date: Date, timeZone: string): string {
  */
 export function dayKeyInTimezone(date: Date, timeZone: string): string {
 	return formatInstantInTimezone(date, timeZone).slice(0, 10);
+}
+
+/** Matches the status line's own threshold (Step 2), so both signals agree on what "stale" means. */
+const MACHINE_SYNC_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
+
+// Matches src/status.mjs's own CLOCK_SKEW_TOLERANCE_MS so both signals agree at the boundary —
+// ordinary skew (server clock adjustment, timer coarseness) is seconds, not minutes; a real clock
+// jump or bad stored value is off by hours or more (card #161 Fix B / R14, dashboard half).
+const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
+
+/**
+ * One machine's sync status, ready to render.
+ *
+ * `stale` reads as "no activity in 12h", not "sync is broken" (card #161 D10) — contact is only
+ * produced by USING the machine, so an idle laptop is indistinguishable from a broken one here.
+ */
+export interface MachineSyncStatusView {
+	machineId: string;
+	/** "never", or an absolute timestamp already formatted in `timeZone` (card #161 Batch A fix
+	 * pass, Fix 4 — the null-to-"never" decision used to live in `machine-sync.tsx`, a display
+	 * component this repo's vitest config cannot reach (no DOM environment), so no test could
+	 * ever exercise it. Moved here, where unit tests already run. */
+	lastContact: string;
+	/** card #161 Batch A fix pass, Fix 1 — the second timestamp D4 records but the dashboard was
+	 * silently dropping before it reached the UI. Same "never"/formatted-timestamp shape as
+	 * `lastContact`. */
+	lastAccepted: string;
+	/** Always `false` when `lastContactAt` is `null` (card #161 D13) — a machine that has never
+	 * once reached the server has nothing to lose, so it is never painted as stale. */
+	stale: boolean;
+}
+
+/**
+ * @param rows - raw query rows (`server/usage-queries.ts`)
+ * @param nowMs - injected rather than read internally, so this stays a pure function
+ * @param timeZone - IANA timezone name (this repo always passes `DASHBOARD_TIMEZONE`)
+ */
+export function evaluateMachineSyncStatus(
+	rows: MachineSyncStatusRow[],
+	nowMs: number,
+	timeZone: string,
+): MachineSyncStatusView[] {
+	return rows.map((row) => {
+		const elapsedMs = row.lastContactAt === null ? null : nowMs - row.lastContactAt.getTime();
+		return {
+			machineId: row.machineId,
+			lastContact: row.lastContactAt === null ? "never" : formatInstantInTimezone(row.lastContactAt, timeZone),
+			lastAccepted: row.lastAcceptedAt === null ? "never" : formatInstantInTimezone(row.lastAcceptedAt, timeZone),
+			// A future lastContactAt (server clock moved, or a bad value already stored) is not
+			// evidence of health — a negative elapsedMs would otherwise always read as "fresh" and
+			// silently disable the flag forever (card #161 R14/R5, dashboard half). Fail loud, but
+			// allow a small tolerance so ordinary clock skew doesn't trip a false flag.
+			stale:
+				elapsedMs !== null &&
+				(elapsedMs < -CLOCK_SKEW_TOLERANCE_MS || elapsedMs >= MACHINE_SYNC_STALE_THRESHOLD_MS),
+		};
+	});
 }
 
 /** A dimension's colour ordering is computed over at least this much history (D21), so the

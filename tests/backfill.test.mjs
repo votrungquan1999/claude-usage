@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,10 +39,11 @@ function assistantRecord({ requestId, messageId, sessionId, timestamp, cwd, isSi
 	};
 }
 
-/** Captures received request bodies; responds 200 immediately. 404s any path other than
- * /api/sync (R31: a wrong path must never be mistaken for the real sync route). */
+/** Captures received request bodies (plus headers); responds 200 immediately. 404s any path
+ * other than /api/sync (R31: a wrong path must never be mistaken for the real sync route). */
 function startFakeServer() {
 	const received = [];
+	const receivedHeaders = [];
 	const server = createServer((req, res) => {
 		let body = "";
 		req.on("data", (chunk) => {
@@ -50,6 +51,7 @@ function startFakeServer() {
 		});
 		req.on("end", () => {
 			received.push(JSON.parse(body));
+			receivedHeaders.push(req.headers);
 			if (req.url !== "/api/sync") {
 				res.writeHead(404, { "Content-Type": "text/html" });
 				res.end("<html><body>Not Found</body></html>");
@@ -62,7 +64,7 @@ function startFakeServer() {
 	return new Promise((resolve) => {
 		server.listen(0, "127.0.0.1", () => {
 			const { port } = server.address();
-			resolve({ server, url: `http://127.0.0.1:${port}`, received });
+			resolve({ server, url: `http://127.0.0.1:${port}`, received, receivedHeaders });
 		});
 	});
 }
@@ -93,6 +95,71 @@ test("walks a project's main transcript and posts its events to the sync endpoin
 		expect(received).toHaveLength(1);
 		expect(received[0].machineId).toBe("machine-abc");
 		expect(received[0].events[0].requestId).toBe("req_1");
+	} finally {
+		server.close();
+	}
+});
+
+test("a successful backfill run does not stamp the sync watermark, even though it shares postEvents with the live sync path (card #161 D6)", async () => {
+	// A backfill run is not evidence the machine's LIVE sync path is healthy — it can run offline,
+	// on demand, long after the events it's uploading were produced.
+	const home = fakeHome();
+	const projectsRoot = mkdtempSync(join(tmpdir(), "claude-usage-backfill-projects-"));
+	const projectDir = join(projectsRoot, "-Users-me-project");
+	writeTranscript(projectDir, "session-1.jsonl", [
+		assistantRecord({
+			requestId: "req_1",
+			messageId: "msg_1",
+			sessionId: "session-1",
+			timestamp: "2026-08-01T10:00:00.000Z",
+			cwd: "/Users/me/project",
+		}),
+	]);
+
+	const { server, url } = await startFakeServer();
+	try {
+		const summary = await runBackfill({
+			projectsRoot,
+			home,
+			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
+		});
+
+		expect(summary.eventsSent, "sanity: the run actually succeeded").toBe(1);
+		const watermarkPath = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+		expect(existsSync(watermarkPath), "backfill must never stamp the sync watermark").toBe(false);
+	} finally {
+		server.close();
+	}
+});
+
+test("a backfill request carries the x-claude-usage-backfill marker header, so the server can also skip stamping machine_sync_state (card #161 D17 Fix A)", async () => {
+	// The LOCAL watermark exemption (D6, above) is only half the fix — R3 found the SERVER'S own
+	// machine_sync_state record still gets stamped on a backfill, with no way to tell it apart
+	// from a live sync. This proves the wiring that lets the server tell them apart actually fires.
+	const home = fakeHome();
+	const projectsRoot = mkdtempSync(join(tmpdir(), "claude-usage-backfill-projects-"));
+	const projectDir = join(projectsRoot, "-Users-me-project");
+	writeTranscript(projectDir, "session-1.jsonl", [
+		assistantRecord({
+			requestId: "req_1",
+			messageId: "msg_1",
+			sessionId: "session-1",
+			timestamp: "2026-08-01T10:00:00.000Z",
+			cwd: "/Users/me/project",
+		}),
+	]);
+
+	const { server, url, receivedHeaders } = await startFakeServer();
+	try {
+		const summary = await runBackfill({
+			projectsRoot,
+			home,
+			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
+		});
+
+		expect(summary.eventsSent, "sanity: the run actually succeeded").toBe(1);
+		expect(receivedHeaders).toHaveLength(1);
+		expect(receivedHeaders[0]["x-claude-usage-backfill"]).toBe("1");
 	} finally {
 		server.close();
 	}

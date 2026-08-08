@@ -11,6 +11,8 @@ import {
 	type SessionListPage,
 	dimensionValueDomain,
 	earliestEventTimestamp,
+	machineSyncStatus,
+	type MachineSyncStatusRow,
 	type SessionSortOrder,
 	type SplitValueBreakdown,
 	listSessions,
@@ -39,6 +41,15 @@ export const loadEarliestEventMs = cache(async (): Promise<number | null> => {
 	const db = await getDatabase();
 	const earliest = await earliestEventTimestamp(db);
 	return earliest === null ? null : earliest.getTime();
+});
+
+/**
+ * Every machine's raw sync status. Zero-arg, like `loadEarliestEventMs` — NOT scoped by the range
+ * picker (D22 precedent), so it is read once per request and shared by whatever renders it.
+ */
+export const loadMachineSyncStatus = cache(async (): Promise<MachineSyncStatusRow[]> => {
+	const db = await getDatabase();
+	return machineSyncStatus(db);
 });
 
 /**

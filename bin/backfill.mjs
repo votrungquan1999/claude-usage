@@ -96,7 +96,11 @@ export async function runBackfill({ projectsRoot, env = process.env, home = home
 				if (events.length === 0) continue;
 
 				for (const batch of chunk(events, BATCH_SIZE)) {
-					const result = await postEvents({ apiUrl, secret, machineId, events: batch });
+					// isBackfill: true (card #161 D17 Fix A) — a manual backfill is not evidence the
+					// machine's LIVE sync path is healthy; the server uses this marker to skip
+					// stamping machine_sync_state, the same way `home` being omitted already skips
+					// the local watermark (D6, above).
+					const result = await postEvents({ apiUrl, secret, machineId, events: batch, isBackfill: true });
 					summary.requestsSent++;
 					summary.eventsSent += result.sent;
 					summary.eventsRejected += result.rejected;

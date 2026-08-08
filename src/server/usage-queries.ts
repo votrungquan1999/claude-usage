@@ -3,7 +3,12 @@ import type { Db } from "mongodb";
 import { normalizeModel } from "@/parser/models.mjs";
 import { cacheSavings, isPricedModel } from "@/parser/pricing.mjs";
 
-import { USAGE_EVENTS_COLLECTION, type UsageEventDocument } from "./usage-store";
+import {
+	MACHINE_SYNC_STATE_COLLECTION,
+	USAGE_EVENTS_COLLECTION,
+	type MachineSyncStateDocument,
+	type UsageEventDocument,
+} from "./usage-store";
 
 /** Fixed per D16 — a "day" is always Asia/Ho_Chi_Minh, never UTC or the viewer's browser zone. */
 export const DASHBOARD_TIMEZONE = "Asia/Ho_Chi_Minh";
@@ -926,6 +931,54 @@ export async function earliestEventTimestamp(db: Db): Promise<Date | null> {
 		.findOne({}, { projection: { timestamp: 1 }, sort: { timestamp: 1 } });
 
 	return oldest?.timestamp ?? null;
+}
+
+/** One machine's sync history for the dashboard tile. `lastContactAt`/`lastAcceptedAt` are `null`,
+ * not absent, when the machine has never had a `machine_sync_state` row (card #161 D13). */
+export interface MachineSyncStatusRow {
+	machineId: string;
+	lastContactAt: Date | null;
+	lastAcceptedAt: Date | null;
+}
+
+/**
+ * Every machine that has EITHER sent usage data OR successfully contacted the server, each
+ * paired with its own `machine_sync_state` row when one exists. NOT scoped by the range picker
+ * (D22 precedent: `earliestEventTimestamp`) — a staleness signal that dims with the window would
+ * misread as "no sync in the selected range".
+ *
+ * The roster is the UNION of `usage_events`' distinct `machineId`s and `machine_sync_state`'s own
+ * machine ids (card #161 Batch A fix pass, Fix 3) — not a left join FROM `usage_events` alone.
+ * That matters for two disjoint shapes: a machine that synced before this feature shipped, or has
+ * never once reached the server successfully, has events but no `machine_sync_state` row (D13);
+ * a machine whose every event in a batch was rejected has contacted the server (a
+ * `machine_sync_state` row exists) but has posted nothing that ever passed validation into
+ * `usage_events`. Either one, alone, must still show up rather than being silently absent.
+ *
+ * Accepted cost: someone holding the shared secret can mint a permanent `machine_sync_state` row
+ * under a made-up machineId with an empty batch — this query will list it. Not re-litigated here;
+ * see D13.
+ *
+ * @param db - the connected database
+ */
+export async function machineSyncStatus(db: Db): Promise<MachineSyncStatusRow[]> {
+	const [machineIdsFromEvents, syncStates] = await Promise.all([
+		db.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION).distinct("machineId"),
+		db.collection<MachineSyncStateDocument>(MACHINE_SYNC_STATE_COLLECTION).find({}).toArray(),
+	]);
+	const syncStateByMachine = new Map(syncStates.map((state) => [state._id, state]));
+	const allMachineIds = new Set([...machineIdsFromEvents, ...syncStates.map((state) => state._id)]);
+
+	return [...allMachineIds]
+		.map((machineId) => {
+			const state = syncStateByMachine.get(machineId);
+			return {
+				machineId,
+				lastContactAt: state?.lastContactAt ?? null,
+				lastAcceptedAt: state?.lastAcceptedAt ?? null,
+			};
+		})
+		.sort((a, b) => a.machineId.localeCompare(b.machineId));
 }
 
 /** `mergeByNormalizedDimension`/`mergeProjectRowsByRepoKey` key their dedup `Map` on `row.day`,

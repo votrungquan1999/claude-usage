@@ -5,6 +5,7 @@ import {
 	colorDomainWindow,
 	dayKeyInTimezone,
 	endOfDayInTimezone,
+	evaluateMachineSyncStatus,
 	fillMissingBuckets,
 	formatInstantInTimezone,
 	formatLowerBoundCost,
@@ -24,6 +25,82 @@ import {
 	subagentCostShare,
 	summarizeUnpricedDays,
 } from "./dashboard-format";
+
+test("flags a machine stale when its last contact was more than 12h ago", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
+	const rows = evaluateMachineSyncStatus(
+		[{ machineId: "machine-stale", lastContactAt: new Date(now - 13 * 60 * 60 * 1000), lastAcceptedAt: null }],
+		now,
+		"UTC",
+	);
+
+	expect(rows).toStrictEqual([
+		{
+			machineId: "machine-stale",
+			lastContact: "2026-08-01 09:00:00",
+			lastAccepted: "never",
+			stale: true,
+		},
+	]);
+});
+
+test("carries lastAcceptedAt through to the view, not just lastContactAt (card #161 Batch A fix pass, Fix 1 — D4's second timestamp was silently dropped before it reached the UI)", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
+	const lastAcceptedAt = new Date(now - 2 * 60 * 60 * 1000);
+	const rows = evaluateMachineSyncStatus(
+		[{ machineId: "machine-worked", lastContactAt: new Date(now - 60 * 1000), lastAcceptedAt }],
+		now,
+		"UTC",
+	);
+
+	expect(rows[0].lastAccepted).toBe("2026-08-01 20:00:00");
+});
+
+test("flags a machine whose last contact is meaningfully in the future as stale, instead of silently reading as fresh forever (card #161 adversarial fix pass F1, dashboard half — R14/R5)", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
+	const rows = evaluateMachineSyncStatus(
+		[{ machineId: "machine-future", lastContactAt: new Date(now + 60 * 60 * 1000), lastAcceptedAt: null }],
+		now,
+		"UTC",
+	);
+
+	expect(rows[0].stale).toBe(true);
+});
+
+test("a few seconds of ordinary clock skew in the future does not flag the machine as stale (card #161 adversarial fix pass F1, dashboard half — matches src/status.mjs's CLOCK_SKEW_TOLERANCE_MS so the two signals agree at the boundary)", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
+	const rows = evaluateMachineSyncStatus(
+		[{ machineId: "machine-skew", lastContactAt: new Date(now + 5 * 1000), lastAcceptedAt: null }],
+		now,
+		"UTC",
+	);
+
+	expect(rows[0].stale).toBe(false);
+});
+
+test("does not flag a machine whose last contact was within 12h", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
+	const rows = evaluateMachineSyncStatus(
+		[{ machineId: "machine-fresh", lastContactAt: new Date(now - 1 * 60 * 60 * 1000), lastAcceptedAt: null }],
+		now,
+		"UTC",
+	);
+
+	expect(rows[0].stale).toBe(false);
+});
+
+test("evaluateMachineSyncStatus renders a null lastContactAt/lastAcceptedAt as the literal string \"never\" (card #161 Batch A fix pass, Fix 4 — D13's null-to-\"never\" decision now lives here, not in the untestable display component, so a unit test can actually assert it)", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
+	const rows = evaluateMachineSyncStatus(
+		[{ machineId: "machine-unrecorded", lastContactAt: null, lastAcceptedAt: null }],
+		now,
+		"UTC",
+	);
+
+	expect(rows).toStrictEqual([
+		{ machineId: "machine-unrecorded", lastContact: "never", lastAccepted: "never", stale: false },
+	]);
+});
 
 test("a fully-priced total renders as a plain dollar amount", () => {
 	expect(formatLowerBoundCost(12.5, 0)).toBe("$12.50");

@@ -18,6 +18,7 @@ import { CacheSavingsView } from "./efficiency/cache-savings-view";
 import { ModelMixView } from "./efficiency/model-mix-view";
 import { SubagentShareView } from "./efficiency/subagent-share-view";
 import { KpiCards } from "./kpi-cards/kpi-cards";
+import { MachineSyncStatus } from "./machine-sync/machine-sync";
 import { RANGE_PRESET_LABELS, RangePresetOptions } from "./range-picker/range-picker";
 import { DEFAULT_RANGE_PRESET, type DashboardWindowView } from "./range-picker/range-picker.type";
 import { SessionList } from "./session-list/session-list";
@@ -78,6 +79,13 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
 					<CardErrorBoundary fallback={<CardErrorNotice>Headline figures could not be loaded</CardErrorNotice>}>
 						<Suspense fallback={<CardPlaceholder />}>
 							<KpiCards nowMs={now.getTime()} timeZone={DASHBOARD_TIMEZONE} />
+						</Suspense>
+					</CardErrorBoundary>
+				}
+				machineSync={
+					<CardErrorBoundary fallback={<CardErrorNotice>Machine sync status could not be loaded</CardErrorNotice>}>
+						<Suspense fallback={<CardPlaceholder />}>
+							<MachineSyncStatus nowMs={now.getTime()} />
 						</Suspense>
 					</CardErrorBoundary>
 				}

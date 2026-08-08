@@ -131,7 +131,7 @@ async function syncOnce({ transcriptPath, home, apiUrl, secret, full }) {
 		// (same constant `bin/backfill.mjs` uses for the same reason).
 		let sent = 0;
 		for (const batch of chunk(events, BATCH_SIZE)) {
-			sent += (await postEvents({ apiUrl, secret, machineId, events: batch })).sent;
+			sent += (await postEvents({ apiUrl, secret, machineId, events: batch, home })).sent;
 		}
 		return { sent };
 	} catch {
@@ -171,6 +171,13 @@ function walkSubagentDir(dir, out) {
 }
 
 const SECRET_HEADER = "x-claude-usage-secret";
+// Mirrors the server's own literal (src/app/api/sync/route.ts) — bin/ and src/app/ don't share
+// an import boundary, same reason SECRET_HEADER is duplicated rather than imported. Set only by
+// bin/backfill.mjs (card #161 D17 Fix A): a manual backfill run is not evidence the machine's
+// LIVE sync path is healthy, and the server uses this header to skip stamping its own
+// machine_sync_state record for exactly that reason. A plain marker, no content — never joins
+// the event-field allowlists.
+const BACKFILL_HEADER = "x-claude-usage-backfill";
 const FETCH_TIMEOUT_MS = 5000;
 const SYNC_PATH = "/api/sync";
 
@@ -195,14 +202,24 @@ export function resolveSyncUrl(apiUrl) {
  * @param {string} options.secret
  * @param {string} options.machineId
  * @param {import("../src/parser/events.mjs").MappedUsageEvent[]} options.events
+ * @param {string} [options.home] - when given, a successful response stamps the local sync
+ *   watermark under this home (card #161 D6). `syncTail` passes it; `bin/backfill.mjs` deliberately
+ *   omits it, since a backfill run is not evidence the machine's LIVE sync path is healthy.
+ * @param {boolean} [options.isBackfill] - card #161 D17 Fix A. `bin/backfill.mjs` passes `true`;
+ *   `syncTail` never passes it (default false), so a live sync's request carries no such header —
+ *   the absence is what tells the server "this is a live sync, stamp normally."
  * @returns {Promise<{sent: number, rejected: number}>} `sent`/`rejected` are 0 on any non-2xx
  *   response, or on a 200 whose body isn't the sync route's own `{accepted, rejected}` shape
  *   (R31: a 200 from the wrong endpoint must never read as a successful send).
  */
-export async function postEvents({ apiUrl, secret, machineId, events }) {
+export async function postEvents({ apiUrl, secret, machineId, events, home, isBackfill = false }) {
 	const response = await fetch(resolveSyncUrl(apiUrl), {
 		method: "POST",
-		headers: { "Content-Type": "application/json", [SECRET_HEADER]: secret },
+		headers: {
+			"Content-Type": "application/json",
+			[SECRET_HEADER]: secret,
+			...(isBackfill && { [BACKFILL_HEADER]: "1" }),
+		},
 		body: JSON.stringify({ machineId, events }),
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 	});
@@ -222,9 +239,35 @@ export async function postEvents({ apiUrl, secret, machineId, events }) {
 		return { sent: 0, rejected: 0 };
 	}
 	if (typeof body?.accepted !== "number") return { sent: 0, rejected: 0 };
+
+	// The only honest success point: a 2xx with a real, server-confirmed body. Every earlier
+	// `return` above (non-ok, non-JSON, no numeric `accepted`) skips this, so a failed send never
+	// stamps the watermark.
+	if (home) stampSyncWatermark(home);
+
 	// rejected exists because the route skips individually-malformed events rather than failing
 	// the whole batch (D21) -- surfaced here, not swallowed, so a caller can report it.
 	return { sent: body.accepted, rejected: typeof body.rejected === "number" ? body.rejected : 0 };
+}
+
+/**
+ * Records when this machine last reached the server, read by `bin/statusline.mjs` (Step 2) and,
+ * once synced, by the dashboard (Step 3/4). Reuses the ledger's own atomic writer.
+ *
+ * Own try/catch (card #161 Batch A fix pass, Fix 5) — same defensive shape as every other local
+ * file access in this file (`readLedger`, `readMachineId`, `readLiveAccount`). Without it, a
+ * read-only/full `$HOME` throws from inside `postEvents`'s terminal success branch, which unwinds
+ * into `syncOnce`'s outer catch — discarding the count for batches already delivered AND
+ * skipping every batch still queued in the loop. A watermark write failing must never affect the
+ * upload it is only recording, not gating.
+ */
+function stampSyncWatermark(home) {
+	const path = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+	try {
+		writeLedger(path, { lastContactAt: new Date().toISOString() });
+	} catch {
+		// Best-effort bookkeeping — a failed stamp just means the next successful sync overwrites it.
+	}
 }
 
 /**

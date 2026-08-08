@@ -4,8 +4,11 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 
 import {
 	ensureUsageIndexes,
+	MACHINE_SYNC_STATE_COLLECTION,
+	recordMachineSync,
 	saveUsageEvents,
 	USAGE_EVENTS_COLLECTION,
+	type MachineSyncStateDocument,
 	type UsageEventDocument,
 } from "./usage-store";
 
@@ -46,6 +49,36 @@ function event(overrides: Partial<UsageEventDocument> = {}): UsageEventDocument 
 		...overrides,
 	};
 }
+
+test("recordMachineSync accepts an injected `now`, so a seed fixture can stamp a historical timestamp rather than always the real current time", async () => {
+	const historicalNow = new Date("2020-01-01T00:00:00.000Z");
+
+	await recordMachineSync(db, "machine-historical", 1, historicalNow);
+
+	const state = await db
+		.collection<MachineSyncStateDocument>(MACHINE_SYNC_STATE_COLLECTION)
+		.findOne({ _id: "machine-historical" });
+	expect(state?.lastContactAt).toEqual(historicalNow);
+	expect(state?.lastAcceptedAt).toEqual(historicalNow);
+});
+
+test("an out-of-order arrival (an earlier response landing after a later one) does not move lastContactAt or lastAcceptedAt backward — monotonic, not last-write-wins (card #161 R26)", async () => {
+	// Proven live in ADVERSARIAL_REVALIDATION.md R26: a plain $set let a delayed/retried upload
+	// that arrives out of order move the record BACKWARD, firing a false "stale" alarm on a
+	// healthy machine. Every other field this store writes already guards against this ($max in
+	// saveUsageEvents) — recordMachineSync must use the same discipline.
+	const later = new Date("2026-08-08T10:05:00.000Z");
+	const earlier = new Date("2026-08-08T10:00:00.000Z");
+
+	await recordMachineSync(db, "machine-race", 1, later);
+	await recordMachineSync(db, "machine-race", 1, earlier);
+
+	const state = await db
+		.collection<MachineSyncStateDocument>(MACHINE_SYNC_STATE_COLLECTION)
+		.findOne({ _id: "machine-race" });
+	expect(state?.lastContactAt).toEqual(later);
+	expect(state?.lastAcceptedAt).toEqual(later);
+});
 
 test("ensureUsageIndexes creates a compound index on sessionId and timestamp", async () => {
 	// The session drill-down (Step 21) queries by sessionId; without this index it is a full

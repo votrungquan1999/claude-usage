@@ -15,6 +15,10 @@ export interface DashboardShellProps {
 	/** Headline figures over FIXED periods, rendered above the filter row because the filter does
 	 * not scope them (D22). */
 	kpis: ReactNode;
+	/** Per-machine sync status (card #161). Its own slot, not merged into `kpis`: `kpis` is a
+	 * single already-composed element, and this is a visually distinct tile next to it — also not
+	 * scoped by the filter row, for the same D22 reason. */
+	machineSync: ReactNode;
 	/** The window currently on screen, and the days the calendar may offer. */
 	view: DashboardWindowView;
 	/** Preset value to label, for the picker's closed trigger. */
@@ -38,6 +42,7 @@ export interface DashboardShellProps {
 export function DashboardShell({
 	header,
 	kpis,
+	machineSync,
 	view,
 	rangeLabels,
 	rangeOptions,
@@ -51,6 +56,7 @@ export function DashboardShell({
 			<div className={cn("items-center gap-4", "grid grid-cols-[1fr_auto]")}>{header}</div>
 
 			{kpis}
+			{machineSync}
 
 			<div className={cn("items-center gap-3", "grid grid-cols-[auto_auto_1fr]")}>
 				<RangePresetField

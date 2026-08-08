@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
 import { closeDatabase } from "@/server/database";
+import type { MachineSyncStateDocument } from "@/server/usage-store";
 import { POST } from "./route";
 
 const SECRET = "route-test-secret";
@@ -365,6 +366,141 @@ test("a wrong secret never causes the database to be contacted", async () => {
 	expect(response.status).toBe(401);
 	// Belt-and-suspenders: also confirm nothing landed, via the separate always-real connection.
 	expect(await db.collection("usage_events").countDocuments({ requestId: "req_wrong" })).toBe(0);
+});
+
+test("a well-formed sync records this machine's last contact and last work received (card #161 D4)", async () => {
+	const response = await POST(
+		syncRequest(
+			{
+				machineId: "machine-sync-contact-1",
+				events: [usageEvent({ requestId: "req_sync_contact_1", messageId: "msg_sync_contact_1" })],
+			},
+			{ "x-claude-usage-secret": SECRET },
+		),
+	);
+
+	expect(response.status).toBe(200);
+	const state = await db
+		.collection<MachineSyncStateDocument>("machine_sync_state")
+		.findOne({ _id: "machine-sync-contact-1" });
+	expect(state).not.toBeNull();
+	expect(state?.lastContactAt).toBeInstanceOf(Date);
+	expect(state?.lastAcceptedAt).toBeInstanceOf(Date);
+});
+
+test("a sync where every event is rejected still records contact, but not last-accepted-work (card #161 D4)", async () => {
+	const response = await POST(
+		syncRequest(
+			{
+				machineId: "machine-sync-contact-2",
+				events: [usageEvent({ requestId: { $gt: "" }, messageId: "msg_sync_contact_2" })],
+			},
+			{ "x-claude-usage-secret": SECRET },
+		),
+	);
+
+	expect(await response.json()).toEqual({ accepted: 0, rejected: 1 });
+	const state = await db
+		.collection<MachineSyncStateDocument>("machine_sync_state")
+		.findOne({ _id: "machine-sync-contact-2" });
+	expect(state).not.toBeNull();
+	expect(state?.lastContactAt).toBeInstanceOf(Date);
+	expect(state?.lastAcceptedAt, "accepted: 0 must not stamp lastAcceptedAt").toBeUndefined();
+});
+
+test("a POST marked as a backfill (x-claude-usage-backfill header) still saves events but does not stamp machine_sync_state (card #161 D17 Fix A)", async () => {
+	// R3: without a way to tell a manual backfill apart from a live sync, running a backfill on a
+	// broken machine silences the dashboard alarm for up to 12h — the exact August scenario.
+	const response = await POST(
+		syncRequest(
+			{
+				machineId: "machine-backfill-flag",
+				events: [usageEvent({ requestId: "req_backfill_flag", messageId: "msg_backfill_flag" })],
+			},
+			{ "x-claude-usage-secret": SECRET, "x-claude-usage-backfill": "1" },
+		),
+	);
+
+	expect(response.status).toBe(200);
+	expect(await response.json()).toEqual({ accepted: 1, rejected: 0 });
+	// The events themselves are still saved — only the machine's sync-health record is exempt.
+	expect(await db.collection("usage_events").findOne({ requestId: "req_backfill_flag" })).not.toBeNull();
+
+	const state = await db
+		.collection<MachineSyncStateDocument>("machine_sync_state")
+		.findOne({ _id: "machine-backfill-flag" });
+	expect(state, "a backfill-marked request must not stamp machine_sync_state").toBeNull();
+});
+
+test("a 401 (wrong/missing secret) leaves machine_sync_state untouched, not just usage_events", async () => {
+	const response = await POST(
+		syncRequest({
+			machineId: "machine-sync-401",
+			events: [usageEvent({ requestId: "req_sync_401", messageId: "msg_sync_401" })],
+		}),
+	);
+
+	expect(response.status).toBe(401);
+	const state = await db
+		.collection<MachineSyncStateDocument>("machine_sync_state")
+		.findOne({ _id: "machine-sync-401" });
+	expect(state).toBeNull();
+});
+
+test("a 400 (invalid events field) leaves machine_sync_state untouched even though machineId was valid", async () => {
+	const response = await POST(
+		syncRequest({ machineId: "machine-sync-400", events: "not-an-array" }, { "x-claude-usage-secret": SECRET }),
+	);
+
+	expect(response.status).toBe(400);
+	const state = await db
+		.collection<MachineSyncStateDocument>("machine_sync_state")
+		.findOne({ _id: "machine-sync-400" });
+	expect(state).toBeNull();
+});
+
+test("an empty-batch post (the README's setup probe) does not create a machine_sync_state record (card #161 D13)", async () => {
+	const response = await POST(syncRequest({ machineId: "probe", events: [] }, { "x-claude-usage-secret": SECRET }));
+
+	expect(response.status).toBe(200);
+	const state = await db.collection<MachineSyncStateDocument>("machine_sync_state").findOne({ _id: "probe" });
+	expect(state, "an empty batch must never mint a permanently-stale ghost row").toBeNull();
+});
+
+test("a second sync from the same machine updates its existing row rather than adding a new one (card #161 D4: keyed by machine, never MAX(timestamp))", async () => {
+	await POST(
+		syncRequest(
+			{
+				machineId: "machine-sync-repeat",
+				events: [usageEvent({ requestId: "req_sync_repeat_1", messageId: "msg_sync_repeat_1" })],
+			},
+			{ "x-claude-usage-secret": SECRET },
+		),
+	);
+	const first = await db
+		.collection<MachineSyncStateDocument>("machine_sync_state")
+		.findOne({ _id: "machine-sync-repeat" });
+
+	await POST(
+		syncRequest(
+			{
+				machineId: "machine-sync-repeat",
+				events: [usageEvent({ requestId: "req_sync_repeat_2", messageId: "msg_sync_repeat_2" })],
+			},
+			{ "x-claude-usage-secret": SECRET },
+		),
+	);
+	const second = await db
+		.collection<MachineSyncStateDocument>("machine_sync_state")
+		.findOne({ _id: "machine-sync-repeat" });
+
+	expect(
+		await db
+			.collection<MachineSyncStateDocument>("machine_sync_state")
+			.countDocuments({ _id: "machine-sync-repeat" }),
+		"one row per machine, not one per sync",
+	).toBe(1);
+	expect(second?.lastContactAt.getTime()).toBeGreaterThanOrEqual(first?.lastContactAt.getTime() ?? 0);
 });
 
 test("the session title survives the server's own allowlist and reaches the stored document", async () => {

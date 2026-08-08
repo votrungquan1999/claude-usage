@@ -2,7 +2,13 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { type Db, MongoClient } from "mongodb";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
-import { USAGE_EVENTS_COLLECTION, ensureUsageIndexes, saveUsageEvents, type UsageEventDocument } from "./usage-store";
+import {
+	recordMachineSync,
+	USAGE_EVENTS_COLLECTION,
+	ensureUsageIndexes,
+	saveUsageEvents,
+	type UsageEventDocument,
+} from "./usage-store";
 import {
 	CostSplitDimension,
 	costPerDay,
@@ -12,6 +18,7 @@ import {
 	earliestEventTimestamp,
 	getSessionBreakdown,
 	listSessions,
+	machineSyncStatus,
 	SessionSortOrder,
 	splitValueBreakdown,
 	type DateRange,
@@ -493,6 +500,46 @@ test("earliestEventTimestamp reports the oldest recorded event, giving the wides
 
 test("earliestEventTimestamp is null on an empty corpus, so all-time has something to fall back from (D36)", async () => {
 	expect(await earliestEventTimestamp(client.db("claude-usage-empty"))).toBeNull();
+});
+
+test("machineSyncStatus reports a machine's last contact and last work received (card #161 D4/D22)", async () => {
+	const isolated = client.db("claude-usage-machine-sync-known");
+	await saveUsageEvents(isolated, [event({ requestId: "req_sync_known", machineId: "machine-known" })]);
+	await recordMachineSync(isolated, "machine-known", 1);
+
+	const rows = await machineSyncStatus(isolated);
+
+	const row = rows.find((r) => r.machineId === "machine-known");
+	expect(row?.lastContactAt).toBeInstanceOf(Date);
+	expect(row?.lastAcceptedAt).toBeInstanceOf(Date);
+});
+
+test("a machine with usage_events but no machine_sync_state row is reported as never contacted, not omitted (card #161 D13)", async () => {
+	const isolated = client.db("claude-usage-machine-sync-unknown");
+	// Events only — no recordMachineSync call, simulating a machine that synced before this
+	// feature shipped (D13's "on day one no machine has a watermark").
+	await saveUsageEvents(isolated, [event({ requestId: "req_sync_unknown", machineId: "machine-unrecorded" })]);
+
+	const rows = await machineSyncStatus(isolated);
+
+	const row = rows.find((r) => r.machineId === "machine-unrecorded");
+	expect(row, "the machine must still appear in the roster").not.toBeUndefined();
+	expect(row?.lastContactAt, "no record means never, not stale-by-default").toBeNull();
+	expect(row?.lastAcceptedAt).toBeNull();
+});
+
+test("a machine that has contacted the server but has no usage_events (every event in its batch was rejected) still appears in the roster (card #161 Batch A fix pass, Fix 3 — the roster was a left join FROM usage_events, not a true union)", async () => {
+	const isolated = client.db("claude-usage-machine-sync-contact-only");
+	// A machine_sync_state row with NO matching usage_events row at all — the D14/D13 union must
+	// come from EITHER side, not only from usage_events' own distinct machineId list.
+	await recordMachineSync(isolated, "machine-contact-only", 0);
+
+	const rows = await machineSyncStatus(isolated);
+
+	const row = rows.find((r) => r.machineId === "machine-contact-only");
+	expect(row, "a machine with contact but zero accepted events must still appear in the roster").not.toBeUndefined();
+	expect(row?.lastContactAt).toBeInstanceOf(Date);
+	expect(row?.lastAcceptedAt, "zero accepted events means lastAcceptedAt stays null").toBeNull();
 });
 
 test("dailyEfficiency reports a day's unpriced events, so a month total can be shown as a lower bound (D17)", async () => {

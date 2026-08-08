@@ -3,6 +3,9 @@ import type { Db, ObjectId } from "mongodb";
 /** Name of the collection holding one row per assistant message. */
 export const USAGE_EVENTS_COLLECTION = "usage_events";
 
+/** Name of the collection holding one row per machine's sync history. */
+export const MACHINE_SYNC_STATE_COLLECTION = "machine_sync_state";
+
 /**
  * One assistant message's token usage, as stored. Aggregates only — no transcript content
  * ever reaches this collection.
@@ -128,4 +131,48 @@ export async function saveUsageEvents(db: Db, events: UsageEventDocument[]): Pro
 	await db.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION).bulkWrite(operations, { ordered: false });
 
 	return events.length;
+}
+
+/**
+ * One machine's sync history, keyed on the machine itself rather than derived via `MAX(timestamp)`
+ * over `usage_events` (card #161 D4) — a machine that stops syncing entirely still needs to be
+ * knowable as stale, which a derived max over an empty/stalled result set cannot express.
+ */
+export interface MachineSyncStateDocument {
+	/** The machine id — the collection's natural key, not a synthetic one. */
+	_id: string;
+	/** Any well-formed 2xx sync, including one that accepted zero events. */
+	lastContactAt: Date;
+	/** Only a sync that accepted at least one event. Absent, not null, otherwise (card #161 D4). */
+	lastAcceptedAt?: Date;
+}
+
+/**
+ * Record that a machine reached the server, and — separately — whether it actually delivered work.
+ * Upserts by `_id: machineId`, so a machine's row always reflects its LATEST timestamps, never a
+ * history of past ones — and, via `$max` (card #161 R26 / Fix C), never moves backward when
+ * requests from the same machine arrive out of order.
+ *
+ * @param db - the connected database
+ * @param machineId - the syncing machine's id
+ * @param accepted - how many events this sync accepted; only `> 0` also stamps `lastAcceptedAt`
+ * @param now - injected rather than read internally by default, so e2e/test fixtures can seed a
+ *   historical timestamp through this same real store function rather than a raw insert
+ */
+export async function recordMachineSync(db: Db, machineId: string, accepted: number, now = new Date()): Promise<void> {
+	await db.collection<MachineSyncStateDocument>(MACHINE_SYNC_STATE_COLLECTION).updateOne(
+		{ _id: machineId },
+		{
+			// $max, never $set (card #161 R26 / Fix C) — a delayed or retried upload arriving out of
+			// order must not move either timestamp BACKWARD; that reads as a false "stale" alarm on a
+			// healthy machine. Same monotonic discipline saveUsageEvents already uses for every token
+			// field, applied here for the same reason: an earlier writer must not overwrite a later one.
+			$max: {
+				lastContactAt: now,
+				// Same conditional-field-spread convention as route.ts:116-121's optional fields.
+				...(accepted > 0 && { lastAcceptedAt: now }),
+			},
+		},
+		{ upsert: true },
+	);
 }

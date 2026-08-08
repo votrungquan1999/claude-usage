@@ -698,6 +698,42 @@ test("syncTail also uploads subagent work, including a subagent launched inside 
 	}
 });
 
+test("records the moment this machine last reached the server (the sync watermark) after a successful sync", async () => {
+	const home = fakeHome({ machineId: "machine-abc" });
+	const projectDir = join(home, ".claude", "projects", "-Users-me-project");
+	const transcript = writeTranscript(projectDir, "session-watermark.jsonl", [
+		assistantRecord({
+			requestId: "req_watermark",
+			messageId: "msg_watermark",
+			sessionId: "session-watermark",
+			timestamp: "2026-08-01T10:00:00.000Z",
+			cwd: "/Users/me/project",
+			prose: "hi",
+		}),
+	]);
+
+	const { server, url } = await startFakeServer();
+	try {
+		const before = Date.now();
+		const result = await syncTail({
+			transcriptPath: transcript,
+			home,
+			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
+		});
+
+		expect(result.sent).toBe(1);
+		const watermarkPath = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+		expect(existsSync(watermarkPath), "watermark file should exist after a successful sync").toBe(true);
+		const watermark = JSON.parse(readFileSync(watermarkPath, "utf8"));
+		expect(
+			new Date(watermark.lastContactAt).getTime(),
+			"watermark must be a real, recent timestamp",
+		).toBeGreaterThanOrEqual(before);
+	} finally {
+		server.close();
+	}
+});
+
 test("a 401 response (wrong/missing secret) is swallowed — sync no-ops without throwing", async () => {
 	const home = fakeHome({ machineId: "machine-abc" });
 	const projectDir = join(home, ".claude", "projects", "-Users-me-project");
@@ -721,6 +757,8 @@ test("a 401 response (wrong/missing secret) is swallowed — sync no-ops without
 		});
 
 		expect(result.sent, "a non-ok response must never be treated as a successful send").toBe(0);
+		const watermarkPath = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+		expect(existsSync(watermarkPath), "a 401 must leave the sync watermark untouched").toBe(false);
 	} finally {
 		server.close();
 	}
@@ -749,6 +787,8 @@ test("a 500 response (server/DB failure) is swallowed the same way", async () =>
 		});
 
 		expect(result.sent).toBe(0);
+		const watermarkPath = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+		expect(existsSync(watermarkPath), "a 500 must leave the sync watermark untouched").toBe(false);
 	} finally {
 		server.close();
 	}
@@ -776,6 +816,8 @@ test("an unreachable server (connection refused) doesn't crash sync", async () =
 	});
 
 	expect(result.sent).toBe(0);
+	const watermarkPath = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+	expect(existsSync(watermarkPath), "an unreachable server must leave the sync watermark untouched").toBe(false);
 });
 
 test("missing/incomplete env config skips the network call entirely", async () => {
@@ -907,6 +949,7 @@ test("postEvents does not double-append /api/sync when the base URL already ends
 });
 
 test("postEvents treats a 200 response that isn't JSON as a failure, not a success (R31: a wrong-path 200 silently dropped events)", async () => {
+	const home = fakeHome({ machineId: "machine-abc" });
 	const server = createServer((req, res) => {
 		res.writeHead(200, { "Content-Type": "text/html" });
 		res.end("<html><body>dashboard</body></html>");
@@ -919,15 +962,19 @@ test("postEvents treats a 200 response that isn't JSON as a failure, not a succe
 			secret: "shh",
 			machineId: "machine-abc",
 			events: [{ requestId: "req_1" }],
+			home,
 		});
 
 		expect(result.sent, "an HTML 200 must never be reported as a successful send").toBe(0);
+		const watermarkPath = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+		expect(existsSync(watermarkPath), "a non-JSON 200 must leave the sync watermark untouched").toBe(false);
 	} finally {
 		server.close();
 	}
 });
 
 test("postEvents treats valid JSON without an `accepted` field as a failure", async () => {
+	const home = fakeHome({ machineId: "machine-abc" });
 	const server = createServer((req, res) => {
 		res.writeHead(200, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ ok: true }));
@@ -940,9 +987,14 @@ test("postEvents treats valid JSON without an `accepted` field as a failure", as
 			secret: "shh",
 			machineId: "machine-abc",
 			events: [{ requestId: "req_1" }],
+			home,
 		});
 
 		expect(result.sent, "JSON without the sync route's own shape must not read as success").toBe(0);
+		const watermarkPath = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+		expect(existsSync(watermarkPath), "a body without `accepted` must leave the sync watermark untouched").toBe(
+			false,
+		);
 	} finally {
 		server.close();
 	}
@@ -985,6 +1037,62 @@ test("postEvents surfaces the server's rejected count rather than hiding it (D21
 		});
 
 		expect(result.rejected, "rejected must be surfaced on the return value, not silently dropped").toBe(2);
+	} finally {
+		server.close();
+	}
+});
+
+test("postEvents stamps the sync watermark even when the server accepted zero events — a well-formed 2xx is contact, regardless of accepted count (card #161 D4)", async () => {
+	const home = fakeHome({ machineId: "machine-abc" });
+	const server = createServer((req, res) => {
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ accepted: 0, rejected: 3 }));
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const { port } = server.address();
+	try {
+		await postEvents({
+			apiUrl: `http://127.0.0.1:${port}`,
+			secret: "shh",
+			machineId: "machine-abc",
+			events: [{ requestId: "req_1" }, { requestId: "req_2" }, { requestId: "req_3" }],
+			home,
+		});
+
+		const watermarkPath = join(home, ".claude", "claude-usage-state", "sync-watermark.json");
+		expect(
+			existsSync(watermarkPath),
+			"a 2xx with accepted: 0 is still a well-formed response — contact happened even though nothing was accepted",
+		).toBe(true);
+	} finally {
+		server.close();
+	}
+});
+
+test("a local disk failure while stamping the sync watermark must never abort an already-successful upload (card #161 Batch A fix pass, Fix 5)", async () => {
+	const home = fakeHome({ machineId: "machine-abc" });
+	// Force the watermark write's own mkdirSync to throw: a FILE sits where
+	// stampSyncWatermark needs to create a directory (read-only/full $HOME's real-world
+	// shape, reproduced deterministically instead of relying on chmod, which a root test
+	// runner would silently ignore).
+	writeFileSync(join(home, ".claude", "claude-usage-state"), "not a directory");
+
+	const server = createServer((req, res) => {
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ accepted: 1, rejected: 0 }));
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const { port } = server.address();
+	try {
+		const result = await postEvents({
+			apiUrl: `http://127.0.0.1:${port}`,
+			secret: "shh",
+			machineId: "machine-abc",
+			events: [{ requestId: "req_1" }],
+			home,
+		});
+
+		expect(result.sent, "a watermark write failure must not swallow the real upload result").toBe(1);
 	} finally {
 		server.close();
 	}

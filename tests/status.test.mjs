@@ -48,6 +48,65 @@ test("warns when context is close enough to full that compaction is coming", () 
 	expect(state.warnings).toStrictEqual(["compaction near"]);
 });
 
+test("warns when this machine has not reached the server in the last 12 hours", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z");
+	const lastContactAt = new Date(now.getTime() - 13 * 60 * 60 * 1000).toISOString(); // 13h ago
+	const state = buildStatusState(PAYLOAD, [record({ id: 1, cacheRead: 400_000, cacheCreation: 2_000 })], 0, {
+		lastContactAt,
+		now,
+	});
+
+	expect(state.warnings).toStrictEqual(["sync broken"]);
+});
+
+test("does not warn when the last contact was within the last 12 hours", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z");
+	const lastContactAt = new Date(now.getTime() - 1 * 60 * 60 * 1000).toISOString(); // 1h ago
+	const state = buildStatusState(PAYLOAD, [record({ id: 1, cacheRead: 400_000, cacheCreation: 2_000 })], 0, {
+		lastContactAt,
+		now,
+	});
+
+	expect(state.warnings).toStrictEqual([]);
+});
+
+test("a watermark meaningfully in the future warns instead of silently disabling the alarm forever (card #161 Fix B / R14)", () => {
+	// A clock jump, VM snapshot restore, or hand-edited file can leave the watermark ahead of real
+	// time. Without a sanity bound, `now - contact` is negative and always looks "fresh" — this is
+	// the exact failure the catalog named as reproducing the original incident.
+	const now = new Date("2026-08-01T22:00:00.000Z");
+	const lastContactAt = new Date(now.getTime() + 60 * 60 * 1000).toISOString(); // 1h in the future
+	const state = buildStatusState(PAYLOAD, [record({ id: 1, cacheRead: 400_000, cacheCreation: 2_000 })], 0, {
+		lastContactAt,
+		now,
+	});
+
+	expect(state.warnings).toStrictEqual(["sync broken"]);
+});
+
+test("a few seconds of ordinary clock skew in the future does not trigger the alarm (card #161 Fix B)", () => {
+	// The fix must not flip a real, healthy machine to "broken" over sub-second/second-scale
+	// timing noise between when the watermark was written and when the status line reads "now".
+	const now = new Date("2026-08-01T22:00:00.000Z");
+	const lastContactAt = new Date(now.getTime() + 5_000).toISOString(); // 5s in the future
+	const state = buildStatusState(PAYLOAD, [record({ id: 1, cacheRead: 400_000, cacheCreation: 2_000 })], 0, {
+		lastContactAt,
+		now,
+	});
+
+	expect(state.warnings).toStrictEqual([]);
+});
+
+test("an unparseable lastContactAt is treated as no data, not as stale, and never throws", () => {
+	const now = new Date("2026-08-01T22:00:00.000Z");
+	const state = buildStatusState(PAYLOAD, [record({ id: 1, cacheRead: 400_000, cacheCreation: 2_000 })], 0, {
+		lastContactAt: "not-a-real-timestamp",
+		now,
+	});
+
+	expect(state.warnings).toStrictEqual([]);
+});
+
 test("takes context from the statusLine payload and turn cost from the transcript", () => {
 	// Claude Code reports context size and window itself; only the 5m/1h cache split,
 	// which it omits, has to come from the transcript.
