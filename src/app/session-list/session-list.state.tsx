@@ -4,6 +4,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 
 import { pathHref } from "../href";
+import { useUrlWriter } from "../url-navigation.state";
 import type { SessionSort } from "./session-list.type";
 
 export interface SessionPageNavigation {
@@ -27,6 +28,7 @@ export interface SessionPageNavigation {
 export function useSessionPageNavigation(): SessionPageNavigation {
 	const router = useRouter();
 	const searchParams = useSearchParams();
+	const { write } = useUrlWriter();
 	// Read rather than hardcoded: this same pager runs on the dashboard AND on a drill-down page,
 	// which pages through its own list and must stay on its own URL.
 	const pathname = usePathname();
@@ -34,13 +36,19 @@ export function useSessionPageNavigation(): SessionPageNavigation {
 
 	function goToPage(page: number): void {
 		startTransition(() => {
-			router.replace(pathHref(pathname, searchParams, { page }), { scroll: false });
+			router.replace(
+				write((base) => pathHref(pathname, base, { page })),
+				{ scroll: false },
+			);
 		});
 	}
 
 	function selectSort(sort: string): void {
 		startTransition(() => {
-			router.replace(pathHref(pathname, searchParams, { sort: sort as SessionSort }), { scroll: false });
+			router.replace(
+				write((base) => pathHref(pathname, base, { sort: sort as SessionSort })),
+				{ scroll: false },
+			);
 		});
 	}
 

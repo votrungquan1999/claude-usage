@@ -104,6 +104,12 @@ Its costs are multiples of `$0.25` — exact in binary — so the total is exact
 
 Subtracting whole days from `now` itself avoids both: day zero lands on `now`, always in the past by the time a page loads, and day *n* lands on the same clock time *n* days earlier, which is the same calendar date in every zone.
 
+### A second, isolated fixture backs the turn timeline
+
+`e2e/fixtures/session-timeline.ts` seeds one standalone session (6 turns, dated 400 days back) through the same `saveUsageEvents` path as the shared corpus, but never merges into `corpus.ts` and is never imported by its own spec — `session-timeline.spec.ts` hardcodes the session id as a literal, matching `machine-sync.spec.ts`'s own precedent of not importing fixture identifiers even when they're exported. The reason is combinatorial, not stylistic (card #161 D12): seven existing specs (`dashboard`, `corpus`, `splits`, `window`, `url-state`, `sessions`, `drilldown`) assert exact literal totals derived from the shared corpus, and adding turns to any session already in it moves those literals. An isolated fixture sidesteps that entirely; a shared one would have needed every one of those seven files re-derived.
+
+**The shared corpus's own token counts are unrelated to its `costUsd` figures** (`n × $0.25`, chosen for exact-binary totals — see above), so a carry/new split computed against an old corpus session will not reconcile to that session's stored cost. This is the other reason the turn timeline needed its own fixture rather than reusing the corpus: reconciling `carry + new` back to `costUsd` is the whole thing under test, and the shared corpus was never built to make that hold.
+
 ### Assert figures, not "something changed"
 
 Narrowing to a 7-day window asserts a specific `$31.50`, not merely that the number moved. A card that re-rendered stale rows would pass the looser check.
@@ -116,7 +122,7 @@ Where a tier-1 selector was missing, the **accessibility gap was fixed** rather 
 
 Where structure sufficed, real ARIA was used: `role="tabpanel"` scopes the split tables, and a unique `Cost in range` column header scopes the session list.
 
-Two traps worth knowing: `CardTitle` renders a plain `<div>`, so card titles are **not** headings; and the pager's anchors go through base-ui's `Button` with `nativeButton={false}`, which stamps `role="button"` on them — so they are not `link`s in the accessibility tree despite being `<a href>`.
+One trap worth knowing: the pager's anchors go through base-ui's `Button` with `nativeButton={false}`, which stamps `role="button"` on them — so they are not `link`s in the accessibility tree despite being `<a href>`. (A second trap used to live here — `CardTitle` rendered a plain `<div>`, so card titles were not headings — closed by F3; see *Gaps found here, since closed* below.)
 
 ### The e2e suite runs serially, and that is faster
 
@@ -132,12 +138,21 @@ A field added to the mapper and covered only by tests that call `saveUsageEvents
 
 Two URL-writing controls used back-to-back race: the second reads `useSearchParams` before the first navigation has committed and rebuilds the query without the first's key. Asserting `toHaveURL` between steps is what makes a multi-step journey test the journey rather than the race.
 
+## Gaps found here, since closed
+
+Neither was a test problem; the e2e work is what exposed both, and card #161 closed both.
+
+- **No heading structure — closed (F3, D5/D15).** `CardTitle` now takes an optional `level?: "h2" | "h3"` prop defaulting to `h2` — every one of the 9 existing call sites needed no change. `h1` is deliberately excluded from the union: every page's own `<h1>` is hand-rendered outside `CardTitle`, and letting `level` reach `h1` would let a call site silently create a second top-level heading. `card.tsx` is shadcn-generated, so a future `shadcn add card` can still revert it silently — the e2e heading assertions (`getByRole("heading", {level, name})`, across `dashboard.spec.ts`, `sessions.spec.ts`, `drilldown.spec.ts`, all 9 call sites) are what makes that revert loud, which is why they are required rather than optional coverage.
+- **A race between two URL-writing controls — closed (F4, D6/D8/D16).** Selecting a window and immediately clicking a split tab used to lose the window. One shared writer (`src/app/url-navigation.state.tsx`'s `useUrlWriter`) now backs all three URL-writing hooks, replacing four local patches that each read a stale `useSearchParams()` snapshot. The regression test fires two controls' clicks with no `await` between them (`Promise.all`, not sequential) and asserts the combined end-state URL via an auto-retrying `toHaveURL` — a real race drops one key and the assertion times out rather than passing on a false positive. Not every pair of controls can prove this: setting a preset or a sort always clears `page` by design (the pager's own clearing rule), so racing `(preset, page)` or `(sort, page)` could never fail regardless of whether the underlying race is fixed — `(preset, tab)` is the pair the test actually races, being the one cross-hook pair with no page-clearing interaction. A real trap worth knowing before adding a similar test elsewhere.
+
 ## Known app-level gaps this surfaced
 
-Neither is a test problem; both are recorded because the e2e work is what exposed them.
+Recorded because the e2e work (and, for the first one, adversarial testing after it shipped) is what exposed them.
 
-- **No heading structure.** Below the single `<h1>`, none of the six dashboard cards is a heading — `CardTitle` is a `<div>`. A screen-reader user cannot navigate between them.
-- **A real race between URL-writing controls.** Selecting a window and *immediately* clicking a split tab loses the window. Low severity, genuinely there.
+- **The visible split tab can lag the URL.** `SplitTabs` is an uncontrolled `<Tabs defaultValue={...}>`. A URL change that happens without a tab click — browser back/forward landing on a URL with a different `tab=`, or the losing side of a race between a tab click and another control — does not move the visible selection until the next reload. Known and accepted (D8); adversarial testing confirmed it is still there and that it self-heals once the URL settles (the visible tab and the address bar agree again without a reload), so the disagreement window is real but transient (sub-2-second in testing).
+- **A third racing control dropping a write — closed (R61).** Firing three controls with no `await` between any of them silently dropped the first-executed write in 7 of 10 runs, while the identical two-control race passed. The cause was not the race itself: `useUrlWriter` is called by three components that do **not** all mount in the same commit — the session list sits behind its own data fetch, so it can still be mounting while the range picker and split tabs are already interactive and already racing. React runs a fresh instance's effect once on mount, and the reconciling effect could not tell "my own late first mount, whose `searchParams` closure is already behind another writer's in-flight write" from "the URL changed externally, adopt it". The late writer's first effect therefore reset the shared bookkeeping to the pre-race value. Fixed with a per-instance ref so a writer's first-ever effect only initialises the shared value when it is still unset, never overwriting one another writer has already established; every later run reconciles as before. 10/10 after, with the two-control race and back/forward both re-verified. Ruled out by instrumentation rather than assumed: `isPending` re-renders and `searchParams` reference instability were both investigated and are not involved.
+
+- **Locators over Recharts output are only as stable as the author's DOM-index arithmetic.** Recharts renders **no element at all** for a zero-valued bar, so a spec indexing into rendered bars is implicitly indexing rendered-and-nonzero ones. Adding `minPointSize` later makes every bar render, silently shifting each index by the number of preceding zeros — and two zero-valued series then land at the same screen position, where the later-declared one intercepts pointer events aimed at the other. This exact locator has now been got wrong twice for this reason, once when written and once when `minPointSize` was added. Re-derive the indices from a real DOM dump whenever anything changes which values Recharts draws.
 
 ## Things these harnesses cannot tell you
 

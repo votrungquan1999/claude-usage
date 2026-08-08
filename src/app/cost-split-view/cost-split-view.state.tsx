@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 
 import { dashboardHref, splitValueHref } from "../href";
+import { useUrlWriter } from "../url-navigation.state";
 import type { SplitTab } from "./cost-split-view.type";
 
 export interface SplitTabNavigation {
@@ -21,12 +22,15 @@ export interface SplitTabNavigation {
  */
 export function useSplitTabNavigation(): SplitTabNavigation {
 	const router = useRouter();
-	const searchParams = useSearchParams();
+	const { write } = useUrlWriter();
 	const [, startTransition] = useTransition();
 
 	function selectTab(tab: SplitTab): void {
 		startTransition(() => {
-			router.replace(dashboardHref(searchParams, { tab }), { scroll: false });
+			router.replace(
+				write((base) => dashboardHref(base, { tab })),
+				{ scroll: false },
+			);
 		});
 	}
 

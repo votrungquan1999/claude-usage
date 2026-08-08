@@ -1,9 +1,10 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 
 import { dashboardHref } from "../href";
+import { useUrlWriter } from "../url-navigation.state";
 import type { RangePreset } from "./range-picker.type";
 
 export interface RangeNavigation {
@@ -28,18 +29,24 @@ export interface RangeNavigation {
  */
 export function useRangeNavigation(): RangeNavigation {
 	const router = useRouter();
-	const searchParams = useSearchParams();
+	const { write } = useUrlWriter();
 	const [isPending, startTransition] = useTransition();
 
 	function selectPreset(preset: RangePreset): void {
 		startTransition(() => {
-			router.replace(dashboardHref(searchParams, { preset }), { scroll: false });
+			router.replace(
+				write((base) => dashboardHref(base, { preset })),
+				{ scroll: false },
+			);
 		});
 	}
 
 	function selectCustomRange(fromDay: string, toDay: string): void {
 		startTransition(() => {
-			router.replace(dashboardHref(searchParams, { customRange: { fromDay, toDay } }), { scroll: false });
+			router.replace(
+				write((base) => dashboardHref(base, { customRange: { fromDay, toDay } })),
+				{ scroll: false },
+			);
 		});
 	}
 
