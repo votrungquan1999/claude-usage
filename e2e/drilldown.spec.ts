@@ -19,6 +19,7 @@ test("clicking a project row opens its drill-down, and the page agrees with the 
 
 	await expect(page).toHaveURL(/\/split\/project\/personal%2Flms/);
 	await expect(page.getByRole("heading", { name: "personal/lms" })).toBeVisible();
+	await expect(page.getByRole("heading", { level: 2, name: "Sessions" })).toBeVisible();
 
 	// The same figure, on the page it opened — a drill-down that disagrees with the row that
 	// opened it is worse than no drill-down.

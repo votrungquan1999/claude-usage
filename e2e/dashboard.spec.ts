@@ -12,6 +12,8 @@ test("an authenticated operator reaches the dashboard instead of the login gate"
 test("every card renders its own content, none falling back to an error boundary", async ({ page }) => {
 	await page.goto("/");
 
+	// level:2 (not just any heading) is the assertion: CardTitle defaults to h2 (card #161 D5), and a
+	// role-less getByText would pass even before that default existed.
 	for (const title of [
 		"Cost per day",
 		"Subagent share of cost",
@@ -20,7 +22,7 @@ test("every card renders its own content, none falling back to an error boundary
 		"Sessions in this range",
 		"Open a session by id",
 	]) {
-		await expect(page.getByText(title, { exact: true })).toBeVisible();
+		await expect(page.getByRole("heading", { level: 2, name: title })).toBeVisible();
 	}
 
 	// Each card carries its own CardErrorBoundary, so one failed query degrades a single card

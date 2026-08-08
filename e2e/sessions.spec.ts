@@ -73,5 +73,6 @@ test("clicking a session opens its own page", async ({ page }) => {
 	// This is the journey the list exists for: before it, reaching a session meant pasting its id.
 	await expect(page).toHaveURL(/\/session\/e2e-session-30$/);
 	await expect(page.getByRole("heading", { level: 1, name: "Session e2e-session-30" })).toBeVisible();
-	await expect(page.getByText("Cost by model", { exact: true })).toBeVisible();
+	await expect(page.getByRole("heading", { level: 2, name: "Overview" })).toBeVisible();
+	await expect(page.getByRole("heading", { level: 2, name: "Cost by model" })).toBeVisible();
 });
