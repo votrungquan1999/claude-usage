@@ -3,12 +3,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { attributeTurns } from "../src/parser/attribution.mjs";
+import { attributeTurns, resolveProjectAttribution } from "../src/parser/attribution.mjs";
 import { dedupeAssistantTurns } from "../src/parser/dedupe.mjs";
 import { mapTurnToEvent, resolveSessionTitle } from "../src/parser/events.mjs";
-import { resolveProjectSlug } from "../src/parser/project.mjs";
 import { streamRecords } from "../src/parser/read.mjs";
-import { resolveRepoKey } from "../src/parser/repo.mjs";
 import { loadDotEnvIfNeeded, postEvents, readLedger } from "./sync.mjs";
 
 /**
@@ -64,17 +62,13 @@ export async function runBackfill({ projectsRoot, env = process.env, home = home
 	const accountLedger = readLedger(ledgerPath);
 
 	for (const projectDir of listProjectDirs(projectsRoot)) {
-		const projectSlug = resolveProjectSlug(projectDir);
-		if (!projectSlug) {
+		// Only a FALLBACK: each turn is attributed on its own evidence, and this is what a turn
+		// offering none lands on. Null when no transcript here records a cwd to resolve from.
+		const fallback = resolveProjectAttribution(projectDir);
+		if (!fallback) {
 			summary.directoriesSkipped++;
 			continue;
 		}
-
-		// Same per-directory resolution as projectSlug (D20) — optional: undefined when the
-		// resolved cwd isn't a git repo, or no longer exists. Only a FALLBACK now: each turn is
-		// attributed on its own evidence, and this is what a turn offering none lands on.
-		const repoKey = resolveRepoKey(projectDir);
-		const fallback = { projectSlug, ...(repoKey !== undefined && { repoKey }) };
 
 		for (const transcriptPath of listTranscripts(projectDir)) {
 			summary.filesProcessed++;

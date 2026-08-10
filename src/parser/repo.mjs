@@ -8,35 +8,41 @@ import { streamRecords } from "./read.mjs";
 /**
  * Memoized by project directory, same shape as `resolveProjectSlug` (project.mjs): resolved
  * once per run and inherited by every file underneath it.
- * @type {Map<string, string|undefined>}
+ * @type {Map<string, ResolvedRepo|undefined>}
  */
 const cache = new Map();
 
 /**
- * Resolve a project directory's repository identity (D20): an opaque hash of its git remote,
- * normalized first so the SSH and HTTPS forms of the same remote (`git@host:org/repo.git` vs.
- * `https://host/org/repo.git`) hash identically — without that, two machines recording either
- * form would never group, silently defeating the whole point of this field.
+ * Resolve a project directory's repository (D20) from the cwd its own transcripts record: the
+ * repository's top level, plus an opaque hash of its git remote — normalized first so the SSH and
+ * HTTPS forms of the same remote (`git@host:org/repo.git` vs. `https://host/org/repo.git`) hash
+ * identically; without that, two machines recording either form would never group, silently
+ * defeating the whole point of this field.
  *
  * Only the hash is ever returned — never the remote URL itself, which would carry employer/org
  * names straight into hosted Atlas, exactly what the two-segment projectSlug (D5) was chosen to
  * strip.
  *
+ * The ROOT is returned alongside the key so a caller can name the repository after its own folder.
+ * Naming it after the recorded cwd instead is what let a folder that merely CONTAINS repositories
+ * be glued to a real repository's key, which then made the dashboard's repository rows unreachable.
+ *
  * Optional by design: a project directory whose recorded cwd no longer exists, or which is not
- * a git repository at all, simply has no key — never fabricated, never a name-based guess.
+ * a git repository at all, simply has no repository — never fabricated, never a name-based guess.
  *
  * @param {string} projectDir - absolute path to a directory under ~/.claude/projects
- * @returns {string|undefined} opaque repo key, or undefined when no git remote is resolvable
+ * @returns {ResolvedRepo|undefined} the repository, or undefined when none is resolvable
  */
-export function resolveRepoKey(projectDir) {
+export function resolveProjectRepo(projectDir) {
 	if (cache.has(projectDir)) return cache.get(projectDir);
 
-	const key = findRepoKey(projectDir);
+	const cwd = findFirstCwd(projectDir);
+	const resolved = cwd ? resolveRepoAt(cwd) : undefined;
 	// Same non-caching-undefined rationale as resolveProjectSlug: a directory with no resolvable
 	// remote today (empty so far, or its cwd doesn't exist yet) might resolve one later in a
 	// long-running process (backfill) — caching undefined would poison every later call.
-	if (key !== undefined) cache.set(projectDir, key);
-	return key;
+	if (resolved !== undefined) cache.set(projectDir, resolved);
+	return resolved;
 }
 
 /**
@@ -44,7 +50,7 @@ export function resolveRepoKey(projectDir) {
  *
  * @typedef {object} ResolvedRepo
  * @property {string} root - absolute path to the repository (or worktree) top level
- * @property {string} key - the same opaque remote hash `resolveRepoKey` returns
+ * @property {string} key - the opaque remote hash stored as `repoKey`
  */
 
 /**
@@ -99,16 +105,6 @@ function runGit(cwd, args) {
 	}
 }
 
-function findRepoKey(projectDir) {
-	const cwd = findFirstCwd(projectDir);
-	if (!cwd) return undefined;
-
-	const remote = readGitRemote(cwd);
-	if (!remote) return undefined;
-
-	return hashRemote(normalizeGitRemote(remote));
-}
-
 /** Same shallow-scan idiom as `project.mjs`'s `findCwdSlug` — stop at the first cwd-bearing record. */
 function findFirstCwd(projectDir) {
 	let entries;
@@ -126,20 +122,6 @@ function findFirstCwd(projectDir) {
 	}
 
 	return null;
-}
-
-/** `git remote get-url origin` run in `cwd`; null on any failure — not a repo, no origin, cwd gone. */
-function readGitRemote(cwd) {
-	if (!existsSync(cwd)) return null;
-	try {
-		return execFileSync("git", ["remote", "get-url", "origin"], {
-			cwd,
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		}).trim();
-	} catch {
-		return null;
-	}
 }
 
 /**

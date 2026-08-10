@@ -5,12 +5,10 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { recordAccount } from "../src/parser/account-ledger.mjs";
-import { attributeTurns } from "../src/parser/attribution.mjs";
+import { attributeTurns, resolveProjectAttribution } from "../src/parser/attribution.mjs";
 import { dedupeAssistantTurns } from "../src/parser/dedupe.mjs";
 import { mapTurnToEvent, resolveSessionTitle } from "../src/parser/events.mjs";
-import { resolveProjectSlug } from "../src/parser/project.mjs";
 import { readTailRecords, streamRecords } from "../src/parser/read.mjs";
-import { resolveRepoKey } from "../src/parser/repo.mjs";
 
 /**
  * Tail-sync one transcript's unsent usage to the hosted store.
@@ -102,17 +100,13 @@ async function syncOnce({ transcriptPath, home, apiUrl, secret, full }) {
 
 		const sessionId = mainTurns[0]?.sessionId ?? subagentTurns[0].sessionId;
 
-		const projectSlug = resolveProjectSlug(dirname(transcriptPath));
-		if (!projectSlug) return { sent: 0 };
+		// Only a FALLBACK: each turn is attributed on its own evidence, and this is what a turn
+		// offering none lands on. Null when no transcript here records a cwd to resolve from.
+		const fallback = resolveProjectAttribution(dirname(transcriptPath));
+		if (!fallback) return { sent: 0 };
 
 		const machineId = readMachineId(home);
 		if (!machineId) return { sent: 0 };
-
-		// Same per-directory resolution as projectSlug (D20) — optional: undefined when the
-		// recorded cwd isn't a git repo, or no longer exists. Only a FALLBACK now: each turn is
-		// attributed on its own evidence, and this is what a turn offering none lands on.
-		const repoKey = resolveRepoKey(dirname(transcriptPath));
-		const fallback = { projectSlug, ...(repoKey !== undefined && { repoKey }) };
 
 		const ledgerPath = join(home, ".claude", "claude-usage-state", "accounts.json");
 		const accountLedger = updateLedgerWithLiveAccount(ledgerPath, readLedger(ledgerPath), home, sessionId);

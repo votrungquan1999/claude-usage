@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 
-import { lastTwoSegments } from "./project.mjs";
-import { resolveRepoAt } from "./repo.mjs";
+import { lastTwoSegments, resolveProjectSlug } from "./project.mjs";
+import { resolveProjectRepo, resolveRepoAt } from "./repo.mjs";
 
 /**
  * Which repository one turn's spend belongs to.
@@ -11,6 +11,23 @@ import { resolveRepoAt } from "./repo.mjs";
  *   directory's own slug when no repository could be resolved
  * @property {string} [repoKey] - absent, not null, when no repository could be resolved
  */
+
+/**
+ * The project directory's own identity — the fallback a turn with no evidence of its own lands on.
+ *
+ * @param {string} projectDir - absolute path to a directory under ~/.claude/projects
+ * @returns {TurnAttribution|null} null when no transcript there records a cwd
+ */
+export function resolveProjectAttribution(projectDir) {
+	// Both halves from ONE resolution. Resolving the folder name and the repository separately let
+	// two independent directory scans answer about different transcripts, which is how a parent
+	// folder's name ended up carrying a real repository's key.
+	const repo = resolveProjectRepo(projectDir);
+	if (repo) return { projectSlug: lastTwoSegments(repo.root), repoKey: repo.key };
+
+	const projectSlug = resolveProjectSlug(projectDir);
+	return projectSlug === null ? null : { projectSlug };
+}
 
 /**
  * Attribute each turn of one session to a repository.
