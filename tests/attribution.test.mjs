@@ -107,3 +107,47 @@ test("a project directory that is not in a repository keeps its own folder name 
 
 	expect(attribution).toStrictEqual({ projectSlug: "git-repos/personal" });
 });
+
+/** The real ubet-devenv shape: a workspace folder that holds checkouts, inside a repo of its own. */
+const DEVENV = { root: "/repos/ubet-devenv", key: "key-devenv" };
+const BACKEND = { root: "/repos/ubet-devenv/workspace/upredict-backend", key: "key-backend" };
+
+/** `workspace` has no repo of its own, so git answers with the repo CONTAINING it. */
+function devenvLookup(dir) {
+	if (dir.startsWith(BACKEND.root)) return BACKEND;
+	if (dir.startsWith(DEVENV.root)) return DEVENV;
+	return undefined;
+}
+
+test("stepping out to the folder that HOLDS the checkouts does not move the session off the checkout", () => {
+	// Most turns run a command or just reply, with cwd back at the workspace root. That folder sits
+	// inside the devenv repo, so git names devenv — a true answer to "which repo is this folder in",
+	// and the wrong answer to "what is this turn working on".
+	const turns = [turn({ cwd: "/repos/ubet-devenv/workspace/upredict-backend" }), turn({ cwd: "/repos/ubet-devenv/workspace" })];
+
+	const attributed = attributeTurns(turns, FALLBACK, devenvLookup);
+
+	expect(attributed.map((entry) => entry.projectSlug)).toStrictEqual(["workspace/upredict-backend", "workspace/upredict-backend"]);
+});
+
+test("the folder that holds the checkouts also loses to the checkout THIS turn's files are in", () => {
+	// The very first turn of a session has no history to fall back on, so the files are the only
+	// narrower answer available.
+	const turns = [turn({ cwd: "/repos/ubet-devenv/workspace", filePaths: ["/repos/ubet-devenv/workspace/upredict-backend/src/app.ts"] })];
+
+	const attributed = attributeTurns(turns, FALLBACK, devenvLookup);
+
+	expect(attributed).toStrictEqual([{ projectSlug: "workspace/upredict-backend", repoKey: "key-backend" }]);
+});
+
+test("a session that really is working on the outer repository still lands there", () => {
+	// The rule only discards the outer repository when a NARROWER answer exists. With nothing
+	// nested in play, work on the container repo itself must still be its own.
+	// No files anywhere: cwd is the ONLY evidence, so discarding it would strand both turns on the
+	// project directory's fallback rather than on the repository they actually ran in.
+	const turns = [turn({ cwd: "/repos/ubet-devenv" }), turn({ cwd: "/repos/ubet-devenv/workspace" })];
+
+	const attributed = attributeTurns(turns, FALLBACK, devenvLookup);
+
+	expect(attributed.map((entry) => entry.projectSlug)).toStrictEqual(["repos/ubet-devenv", "repos/ubet-devenv"]);
+});

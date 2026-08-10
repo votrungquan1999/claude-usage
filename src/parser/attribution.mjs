@@ -52,12 +52,34 @@ export function attributeTurns(turns, fallback, lookup = resolveRepoAt) {
 		// cwd outranks the files: a turn run inside one repository while READING a file from
 		// another is working on the first. Where cwd is the parent folder it resolves to nothing
 		// and the files decide, which is the whole case this exists for.
-		const resolved = repoFromCwd(turn, lookup) ?? dominantRepoAmongFiles(turn, carried, lookup) ?? carried;
+		const fromCwd = repoFromCwd(turn, lookup);
+		// ...except when that folder holds the checkouts rather than being one of them. A workspace
+		// directory can sit INSIDE a repository of its own, and `--show-toplevel` reports that
+		// repository for every turn run from it — true for the question asked, wrong for this one.
+		// Stepping out to it is the session zooming out, not moving to another project, so a
+		// narrower answer already in hand wins.
+		// Both narrower answers count: the repository the session is already in, and the one this
+		// turn's own files sit in — the latter being all a session's FIRST turn has to go on.
+		const fromFiles = dominantRepoAmongFiles(turn, carried, lookup);
+		const outranked = strictlyContains(fromCwd, carried) || strictlyContains(fromCwd, fromFiles);
+		const resolved = (outranked ? undefined : fromCwd) ?? fromFiles ?? carried;
 		if (!resolved) return fallback;
 
 		carried = resolved;
 		return { projectSlug: lastTwoSegments(resolved.root), repoKey: resolved.key };
 	});
+}
+
+/**
+ * Whether `outer` strictly contains `inner`, making it the less specific of the two. Compares the
+ * resolved roots rather than the recorded paths, so a repository is never judged by where a turn
+ * happened to stand.
+ *
+ * @param {import("./repo.mjs").ResolvedRepo|undefined} outer
+ * @param {import("./repo.mjs").ResolvedRepo|undefined} inner
+ */
+function strictlyContains(outer, inner) {
+	return outer !== undefined && inner !== undefined && inner.root.startsWith(`${outer.root}/`);
 }
 
 /**
