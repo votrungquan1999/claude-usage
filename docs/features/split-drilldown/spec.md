@@ -32,11 +32,25 @@ A label the dashboard never rendered resolves to a filter nothing matches, which
 
 **This reverses the labelling half of card #132's worktree-merge rule.** That rule picked the shortest projectSlug inside each *day's* merge, which named a repository after whichever checkout happened to run that day. A worktree working a branch alone for a day named that whole day after the worktree — and `rankDimensionTotals` groups by the label *string*, so one repository emitted **two ranked rows**, each holding part of its cost and each linking to part of its sessions.
 
-`repoLabelsAcrossRange` now resolves the label over the whole window before any per-day grouping, ties broken alphabetically so it never depends on the order Mongo returned rows in. The merge *grouping* is still per (day, repoKey) — that is what draws one bar per day. Only the label is window-wide.
+`repoLabelsAcrossRange` now resolves the label over the whole window before any per-day grouping, so it never depends on the order Mongo returned rows in. The merge *grouping* is still per (day, repoKey) — that is what draws one bar per day. Only the label is window-wide.
 
 Consequence, accepted: a repository that used to appear as two rows on the Project and Repo tabs now appears as one. That is a visible change to the dashboard, not only to this feature.
 
-`repoKeyForLabel` re-derives label → repoKey using that same function, so the resolver and the split cannot drift apart.
+### A repository is named after the folder it was mostly worked in
+
+The label is the projectSlug carrying the **most events** for that repoKey across the window, ties broken by shortest slug and then alphabetically.
+
+Shortest-slug-wins was the original rule, and card #166 proved it unsafe. Per-turn attribution means a folder that merely *contains* repositories picks up real spend whenever a turn resolves outward from it — and such a folder has a short name. On production `git-repos/personal` (19 chars) outranked both `personal/claude-usage` (21) and `personal/quant-trading` (22), taking **both** their names at once. Two repositories under one label is not just an ugly name: the drill-down resolves label → repoKey, so at most one of them stays reachable. The shortest-slug tie-break keeps the original worktree case intact — a main checkout and its worktree that each ran once still resolve to the main checkout.
+
+### Both sides derive the label from the same rows, not just the same function
+
+`repoKeyForLabel` re-derives label → repoKey through `repoLabelsAcrossRange`. Sharing the *function* was assumed to be enough and was not: the two sides fed it **different row sets**, so it returned different answers.
+
+`costPerDay` grouped by (day, projectSlug) and carried `repoKey: { $first }`. One folder can legitimately carry several repoKeys — or a mix of "has one" and "has none" — so `$first` kept one and silently discarded the rest, and being unordered it was arbitrary which. `repoKeyForLabel` meanwhile grouped over *every* (projectSlug, repoKey) pair. Strictly more pairs meant it could pick a name the dashboard never rendered, and the link the dashboard itself drew then resolved to nothing — the reported "No data in this range" on a repository with obvious spend.
+
+The fix is upstream of the labelling: both repository-merging dimensions now group by repoKey **as part of the key**, so a folder spanning two repositories arrives as one row per repository and nothing is discarded. Feeding `repoKeyForLabel` real event counts (it previously passed zeroes, which tied every slug) completes the symmetry. The two sides now see the same (slug, repoKey, count) set by construction, so they cannot disagree.
+
+Two figures were wrong for the same reason and are now right: a repository's row was missing whatever spend was recorded under a shared folder, and `(unattributed)` was inflated by exactly that spend — so the bucket's row and its own drill-down reported different totals ($9.22/111 events vs $3.09/45 on 2026-08-08).
 
 ### The repoKey still never reaches the browser
 

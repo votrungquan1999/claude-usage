@@ -1301,3 +1301,126 @@ test("listSessions can order by how busy a session was, which is not the same as
 
 	expect(page.rows.map((row) => row.sessionId)).toEqual(["sess-busy", "sess-costly"]);
 });
+
+test("a folder that carries a repository key on some events and none on others keeps both halves in the right row", async () => {
+	// The 2026-08-08 shape: a session launched from the folder ABOVE the repositories, so per-turn
+	// attribution puts some of its spend under that folder's own name while still resolving the
+	// repository. Keeping one key per (day, folder) discards whichever half loses the coin toss.
+	const range = dayRange("2027-01-05");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_mx_own_a", messageId: "msg_mx_own_a", timestamp: range.from, projectSlug: "personal/cu", repoKey: "hash-mx", costUsd: 5 }),
+		event({ requestId: "req_mx_own_b", messageId: "msg_mx_own_b", timestamp: range.from, projectSlug: "personal/cu", repoKey: "hash-mx", costUsd: 5 }),
+		// Recorded BEFORE its repository-bearing sibling, so a first-one-wins rule deterministically
+		// picks "no repository" for the whole folder.
+		event({ requestId: "req_mx_none", messageId: "msg_mx_none", timestamp: range.from, projectSlug: "parent-holding-repos/personal", costUsd: 3 }),
+		event({ requestId: "req_mx_key", messageId: "msg_mx_key", timestamp: range.from, projectSlug: "parent-holding-repos/personal", repoKey: "hash-mx", costUsd: 4 }),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	expect(rows).toContainEqual(expect.objectContaining({ dimensionValue: "personal/cu", costUsd: 14, eventCount: 3 }));
+	expect(rows).toContainEqual(expect.objectContaining({ dimensionValue: "(unattributed)", costUsd: 3, eventCount: 1 }));
+});
+
+test("a repository is named after the folder it was mostly worked in, not the shortest folder name", async () => {
+	// A folder that merely CONTAINS repositories has a short name and can pick up a little spend
+	// through per-turn attribution. Naming by length hands it the repository's identity.
+	const range = dayRange("2027-01-06");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_nm_parent", messageId: "msg_nm_parent", timestamp: range.from, projectSlug: "parent/x", repoKey: "hash-nm", costUsd: 1 }),
+		...[1, 2, 3].map((n) =>
+			event({
+				requestId: `req_nm_own_${n}`,
+				messageId: `msg_nm_own_${n}`,
+				timestamp: range.from,
+				projectSlug: "personal/my-repository",
+				repoKey: "hash-nm",
+				costUsd: 2,
+			}),
+		),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	expect(rows).toContainEqual(expect.objectContaining({ dimensionValue: "personal/my-repository", costUsd: 7, eventCount: 4 }));
+	expect(rows.some((row) => row.dimensionValue === "parent/x")).toBe(false);
+});
+
+test("every repository row the dashboard renders can be drilled into", async () => {
+	// The reported shape: one session launched from the folder holding both repositories, so a
+	// little of each repository's spend is recorded under that folder's shorter name. The row and
+	// the drill-down derive the repository's name separately, so they have to agree.
+	const range = dayRange("2027-01-07");
+	await saveUsageEvents(db, [
+		...[1, 2, 3].map((n) =>
+			event({
+				requestId: `req_ag_usage_${n}`,
+				messageId: `msg_ag_usage_${n}`,
+				sessionId: "ag-usage",
+				timestamp: range.from,
+				projectSlug: "personal/usage-tool",
+				repoKey: "hash-ag-usage",
+				costUsd: 2,
+			}),
+		),
+		...[1, 2, 3].map((n) =>
+			event({
+				requestId: `req_ag_trading_${n}`,
+				messageId: `msg_ag_trading_${n}`,
+				sessionId: "ag-trading",
+				timestamp: range.from,
+				projectSlug: "personal/trading-bot",
+				repoKey: "hash-ag-trading",
+				costUsd: 3,
+			}),
+		),
+		event({ requestId: "req_ag_above_u", messageId: "msg_ag_above_u", sessionId: "ag-above", timestamp: range.from, projectSlug: "above/repos", repoKey: "hash-ag-usage", costUsd: 1 }),
+		event({ requestId: "req_ag_above_t", messageId: "msg_ag_above_t", sessionId: "ag-above", timestamp: range.from, projectSlug: "above/repos", repoKey: "hash-ag-trading", costUsd: 1 }),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+	// Sorted because rows within one day come back in whatever order Mongo grouped them.
+	const rendered = rows.map((row) => row.dimensionValue).sort();
+	expect(rendered).toEqual(["personal/trading-bot", "personal/usage-tool"]);
+
+	const drilled = await Promise.all(
+		rendered.map(async (label) => {
+			const breakdown = await splitValueBreakdown(db, CostSplitDimension.Repo, label, range, 0, 25, SessionSortOrder.Cost);
+			return [label, breakdown.costUsd, breakdown.eventCount];
+		}),
+	);
+
+	expect(drilled).toEqual([
+		["personal/trading-bot", 10, 4],
+		["personal/usage-tool", 7, 4],
+	]);
+});
+
+test("the no-repository row reports the same figures as drilling into it", async () => {
+	// The row is built by folding the daily split; the drill-down asks the events directly. On
+	// production these disagreed ($9.22/111 events vs $3.09/45) because repository-bearing events
+	// recorded under a shared folder were being counted as having no repository at all.
+	const range = dayRange("2027-01-08");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_ub_none", messageId: "msg_ub_none", sessionId: "ub-none", timestamp: range.from, projectSlug: "holder/dir", costUsd: 3 }),
+		event({ requestId: "req_ub_keyed", messageId: "msg_ub_keyed", sessionId: "ub-keyed", timestamp: range.from, projectSlug: "holder/dir", repoKey: "hash-ub", costUsd: 4 }),
+		...[1, 2].map((n) =>
+			event({
+				requestId: `req_ub_own_${n}`,
+				messageId: `msg_ub_own_${n}`,
+				sessionId: "ub-own",
+				timestamp: range.from,
+				projectSlug: "personal/real-repo",
+				repoKey: "hash-ub",
+				costUsd: 3,
+			}),
+		),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+	const unattributedRow = rows.find((row) => row.dimensionValue === "(unattributed)");
+	const breakdown = await splitValueBreakdown(db, CostSplitDimension.Repo, "(unattributed)", range, 0, 25, SessionSortOrder.Cost);
+
+	expect(unattributedRow).toEqual(expect.objectContaining({ costUsd: 3, eventCount: 1 }));
+	expect([breakdown.costUsd, breakdown.eventCount, breakdown.sessionCount]).toEqual([3, 1, 1]);
+});
