@@ -5,6 +5,12 @@ import type {
 	DateRange,
 	MachineSyncStatusRow,
 } from "@/server/usage-queries";
+// Value import, not type-only (unlike the block above): the sentinel string itself, not just its
+// shape — usage-queries.ts is the query-layer's own source of truth for it (R17). Safe to pull
+// into this shared, non-"use client" module: usage-queries.ts has no runtime dependency on the
+// mongodb driver (it only ever takes a `Db` as a parameter type), so nothing server-only rides
+// along with this constant into a client bundle.
+import { UNATTRIBUTED_DIMENSION_VALUE } from "@/server/usage-queries";
 
 import { DEFAULT_SPLIT_TAB, SplitTab } from "./cost-split-view/cost-split-view.type";
 import { DEFAULT_SESSION_SORT, SessionSort } from "./session-list/session-list.type";
@@ -249,14 +255,20 @@ function bucketLabel(firstDay: string, lastDay: string): string {
 }
 
 /**
- * A bucket label rendered as an X-axis tick: its first day alone. The full span stays in the
- * tooltip, which has room for it — a `2026-07-06…2026-07-10` tick is twice as wide as the axis can
- * carry, and 20 of them collide into the mess bucketing exists to remove.
+ * A bucket label rendered as an X-axis tick: its first day alone, in a two-digit-year form
+ * (`26-07-06`) rather than the full `YYYY-MM-DD` (card #170 D10/D34) — shorter at every viewport,
+ * with no JS breakpoint. The full span stays in the tooltip, which has room for it — a
+ * `2026-07-06…2026-07-10` tick is wider than the axis can carry, and 20 of them collide into the
+ * mess bucketing exists to remove.
+ *
+ * Never drops the year outright (R28): once the corpus outlives a year, an "all time" window's
+ * 20-bucket cap can put two `01-05` ticks from different years side by side, and a bare `MM-DD`
+ * tick cannot tell them apart. Keeping two digits of year is what a bare month/day format loses.
  *
  * @param label - a bucket label from `planDayBuckets`
  */
 export function bucketAxisTick(label: string): string {
-	return label.slice(0, 10);
+	return label.slice(2, 10);
 }
 
 /**
@@ -623,6 +635,10 @@ const CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
  */
 export interface MachineSyncStatusView {
 	machineId: string;
+	/** Operator-assigned display name, or `null` when never set (Step 10) — carried through
+	 * unchanged so `machine-sync.tsx` can resolve it with `machineDisplayName` the same way every
+	 * other surface does. */
+	name: string | null;
 	/** "never", or an absolute timestamp already formatted in `timeZone` (card #161 Batch A fix
 	 * pass, Fix 4 — the null-to-"never" decision used to live in `machine-sync.tsx`, a display
 	 * component this repo's vitest config cannot reach (no DOM environment), so no test could
@@ -651,6 +667,7 @@ export function evaluateMachineSyncStatus(
 		const elapsedMs = row.lastContactAt === null ? null : nowMs - row.lastContactAt.getTime();
 		return {
 			machineId: row.machineId,
+			name: row.name,
 			lastContact: row.lastContactAt === null ? "never" : formatInstantInTimezone(row.lastContactAt, timeZone),
 			lastAccepted: row.lastAcceptedAt === null ? "never" : formatInstantInTimezone(row.lastAcceptedAt, timeZone),
 			// A future lastContactAt (server clock moved, or a bad value already stored) is not
@@ -1142,4 +1159,42 @@ export function emptyEfficiencyRow(day: string): DailyEfficiencyRow {
 		cacheWrite5mTokens: 0,
 		cacheWrite1hTokens: 0,
 	};
+}
+
+/**
+ * A short, readable stand-in for a machine id: its first 8 characters, in a monospaced face
+ * (D7 — matches the repo's one existing precedent, `session-table.tsx:43`'s
+ * `.slice(0, 8)`). A no-op on anything already 8 characters or shorter, so a short id (like the
+ * README setup probe's `"probe"`) is never lengthened or otherwise mangled (D18/R18).
+ *
+ * @param machineId - the machine's full stored id
+ */
+export function shortenMachineId(machineId: string): string {
+	return machineId.slice(0, 8);
+}
+
+/**
+ * What to show for a machine: its nickname, else a short id (D1/D7). The fallback the
+ * whole mobile layout is built and tested against before the nickname feature ships (D6) — always
+ * `undefined` until Step 9/10 land.
+ *
+ * An empty or whitespace-only nickname reads as ABSENT, not as a literal empty label (D14) — the
+ * same rule the rename route already applies when STORING a name (clearing removes it rather than
+ * saving ""), applied here too so a caller can never end up displaying nothing at all.
+ *
+ * The `(unattributed)` sentinel (R17) is never a real machine id — it stands in for a row whose
+ * `machineId` was missing at ingest. Checked first and returned verbatim: shortening it would mangle
+ * it into "(unattri", and a nickname parameter here would only ever be a bug (a real machine's
+ * nickname is looked up by its OWN id, never by this literal string), so both are skipped
+ * entirely rather than merely falling through the empty-nickname branch above. Keying the check on
+ * `machineId`, not on `nickname`, is what keeps a real machine deliberately NAMED "(unattributed)"
+ * showing its nickname normally (R5) — only the sentinel id itself takes this branch.
+ *
+ * @param nickname - the operator-assigned name, if one has been set
+ * @param machineId - the machine's full stored id, or the `(unattributed)` sentinel
+ */
+export function machineDisplayName(nickname: string | undefined, machineId: string): string {
+	if (machineId === UNATTRIBUTED_DIMENSION_VALUE) return UNATTRIBUTED_DIMENSION_VALUE;
+	if (nickname === undefined || nickname.trim() === "") return shortenMachineId(machineId);
+	return nickname;
 }

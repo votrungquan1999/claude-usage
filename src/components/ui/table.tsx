@@ -4,10 +4,23 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+function Table({
+  className,
+  "aria-label": ariaLabel,
+  ...props
+}: React.ComponentProps<"table">) {
   return (
-    <div
+    // JUSTIFIED PRIMITIVE EDIT: `{...props}` below reaches only the inner <table>, never this
+    // wrapper — so tabIndex/aria-label cannot land here from a call site any other way. `<section
+    // aria-label>` carries an implicit "region" landmark role with no explicit `role` needed. No
+    // <caption> exists anywhere in this codebase, so the region is named via aria-label rather
+    // than aria-labelledby (D2, card #170 Step 5). `tabIndex` on an otherwise non-interactive
+    // element is the standard technique for a keyboard-reachable scroll container (WCAG 2.1.1) —
+    // deliberate here, not an oversight.
+    <section
       data-slot="table-container"
+      aria-label={ariaLabel}
+      tabIndex={0}
       className="relative w-full overflow-x-auto"
     >
       <table
@@ -15,7 +28,7 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
         className={cn("w-full caption-bottom text-sm", className)}
         {...props}
       />
-    </div>
+    </section>
   )
 }
 

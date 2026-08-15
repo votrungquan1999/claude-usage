@@ -1,6 +1,6 @@
 import { DASHBOARD_TIMEZONE } from "@/server/usage-queries";
 
-import { evaluateMachineSyncStatus } from "../dashboard-format";
+import { evaluateMachineSyncStatus, machineDisplayName } from "../dashboard-format";
 import { loadMachineSyncStatus } from "../dashboard-loaders";
 import { MachineSyncRow, MachineSyncTile } from "./machine-sync.ui";
 
@@ -23,12 +23,21 @@ export async function MachineSyncStatus({ nowMs }: MachineSyncStatusProps): Prom
 	// instead of living in a display component this repo's vitest config can't reach.
 	const statuses = evaluateMachineSyncStatus(rows, nowMs, DASHBOARD_TIMEZONE);
 
+	// D17 — sorted by what the tile actually shows, not by the raw id: a visible list ordered by
+	// an invisible key reads as unsorted. `rankDimensionTotals`'s tie-break deliberately does NOT
+	// follow this rule (D17) — that ordering is load-bearing for pagination stability (D38).
+	const rowsToRender = statuses
+		.map((status) => ({ ...status, displayName: machineDisplayName(status.name ?? undefined, status.machineId) }))
+		.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
 	return (
 		<MachineSyncTile>
-			{statuses.map((status) => (
+			{rowsToRender.map((status) => (
 				<MachineSyncRow
 					key={status.machineId}
+					displayName={status.displayName}
 					machineId={status.machineId}
+					name={status.name}
 					lastContact={status.lastContact}
 					lastAccepted={status.lastAccepted}
 					stale={status.stale}

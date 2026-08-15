@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
  * Stacks a drill-down's back link, heading, summary and session table.
  */
 export function SplitValueLayout({ children }: { children: ReactNode }): React.JSX.Element {
-	return <main className={cn("gap-6 p-8", "grid")}>{children}</main>;
+	return <main className={cn("gap-6 p-8", "grid grid-cols-[minmax(0,1fr)]")}>{children}</main>;
 }
 
 /**

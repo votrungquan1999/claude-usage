@@ -1,17 +1,18 @@
-import { type CostSplitDimension, DASHBOARD_TIMEZONE } from "@/server/usage-queries";
+import { CostSplitDimension, DASHBOARD_TIMEZONE } from "@/server/usage-queries";
 
 import {
 	assignSeriesColorSlots,
 	dayKeyInTimezone,
 	fillMissingBuckets,
 	TOP_SERIES_COUNT,
+	machineDisplayName,
 	pivotForChart,
 	planDayBuckets,
 	rankDimensionTotals,
 	relabelRowsToBuckets,
 	summarizeUnpricedDays,
 } from "../dashboard-format";
-import { loadCostPerDay, loadDimensionDomain } from "../dashboard-loaders";
+import { loadCostPerDay, loadDimensionDomain, loadMachineSyncStatus } from "../dashboard-loaders";
 import { CostChart } from "./cost-chart";
 import type { SeriesColorMap, SplitTab } from "./cost-split-view.type";
 import { CostSplitLayout, UnpricedRangeNotice } from "./cost-split-view.ui";
@@ -97,11 +98,40 @@ export async function CostSplitView({
 	const unpriced = summarizeUnpricedDays(chartData);
 	const unpricedMessage = unpricedRangeMessage(unpriced.dayCount, unpriced.eventCount);
 
+	// Real nicknames, Machine tab only. A failed read must not blank this card's spend figures
+	// (D19) — every machine below just falls back to `machineDisplayName`'s own short-id default.
+	let nicknameByMachineId: Record<string, string | undefined> = {};
+	if (dimension === CostSplitDimension.Machine) {
+		try {
+			const syncRows = await loadMachineSyncStatus();
+			nicknameByMachineId = Object.fromEntries(syncRows.map((row) => [row.machineId, row.name ?? undefined]));
+		} catch {
+			// D19 — the chart and the table below still render every figure, just under short ids.
+		}
+	}
+
+	// LABEL only (D12/D17) — every key CostChart draws with (colors, the synthetic dataKeys) stays
+	// on the raw dimensionValue; only the legend/tooltip text resolved from this map changes. A
+	// plain Record, not a formatter function: CostChart is "use client", and a function built here
+	// can't cross that boundary — only serializable data can (D32). The totals table needs its OWN
+	// map covering every row, not just the chart's top-N `topValues` (D25's precedent: the table is
+	// not capped the way the chart is).
+	const chartLabels: Record<string, string> | undefined =
+		dimension === CostSplitDimension.Machine
+			? Object.fromEntries(topValues.map((value) => [value, machineDisplayName(nicknameByMachineId[value], value)]))
+			: undefined;
+	const tableLabels: Record<string, string> | undefined =
+		dimension === CostSplitDimension.Machine
+			? Object.fromEntries(
+					totals.map((total) => [total.dimensionValue, machineDisplayName(nicknameByMachineId[total.dimensionValue], total.dimensionValue)]),
+				)
+			: undefined;
+
 	return (
 		<CostSplitLayout>
 			{unpricedMessage !== null && <UnpricedRangeNotice>{unpricedMessage}</UnpricedRangeNotice>}
-			<CostChart data={chartData} seriesKeys={topValues} colors={seriesColors} />
-			<DimensionTotalsTable totals={totals} dimensionLabel={dimensionLabel} colors={tableColors} tab={tab} />
+			<CostChart data={chartData} seriesKeys={topValues} colors={seriesColors} labels={chartLabels} />
+			<DimensionTotalsTable totals={totals} dimensionLabel={dimensionLabel} colors={tableColors} tab={tab} labels={tableLabels} />
 		</CostSplitLayout>
 	);
 }

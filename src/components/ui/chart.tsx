@@ -29,6 +29,83 @@ type ChartContextProps = {
 
 const ChartContext = React.createContext<ChartContextProps | null>(null)
 
+// `(hover: hover)` — the ONLY pointer-capability (not viewport-width) predicate anywhere in this
+// codebase (card #170 D13/D21): recharts 3.8.0 makes a tooltip's hover and click triggers mutually
+// exclusive, so the trigger has to follow whether the DEVICE can hover at all, not how wide the
+// window happens to be — a question about input, not about space.
+const HOVER_QUERY = "(hover: hover)"
+
+function subscribeHoverCapable(onChange: () => void): () => void {
+  const mql = window.matchMedia(HOVER_QUERY)
+  mql.addEventListener("change", onChange)
+  return () => mql.removeEventListener("change", onChange)
+}
+
+function getHoverCapableSnapshot(): boolean {
+  return window.matchMedia(HOVER_QUERY).matches
+}
+
+// Matches recharts' own default trigger ("hover") for the server-rendered/pre-hydration paint, so
+// there is nothing to reconcile between the server and the first client render.
+function getHoverCapableServerSnapshot(): boolean {
+  return true
+}
+
+/**
+ * Whether a chart's tooltip should show on hover (a pointing device) or on tap (a touch screen).
+ * recharts 3.8.0 cannot serve both with one static `trigger` prop — traced through
+ * `combineTooltipInteractionState`, `trigger="click"` reads the tooltip's active state exclusively
+ * from click interaction, never from hover — so this reads the device's own pointer capability
+ * instead of guessing from viewport width (card #170 D13).
+ */
+export function useChartTooltipTrigger(): "hover" | "click" {
+  const hoverCapable = React.useSyncExternalStore(
+    subscribeHoverCapable,
+    getHoverCapableSnapshot,
+    getHoverCapableServerSnapshot
+  )
+  return hoverCapable ? "hover" : "click"
+}
+
+/**
+ * A store of "how many times has a pointer gone down outside `containerRef`'s element" (card #170
+ * Step 7). recharts' click-trigger mode has no built-in tap-outside-to-dismiss — remounting the
+ * chart (via this count as a `key`) resets recharts' own click-active state, which is the only
+ * way to clear it from outside recharts' own event handling.
+ */
+function createOutsideTapStore(containerRef: React.RefObject<HTMLElement | null>) {
+  let dismissKey = 0
+  const listeners = new Set<() => void>()
+
+  function handlePointerDown(event: PointerEvent) {
+    const container = containerRef.current
+    if (container && event.target instanceof Node && !container.contains(event.target)) {
+      dismissKey += 1
+      listeners.forEach((listener) => {
+        listener()
+      })
+    }
+  }
+
+  return {
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener)
+      if (listeners.size === 1) {
+        document.addEventListener("pointerdown", handlePointerDown)
+      }
+      return () => {
+        listeners.delete(listener)
+        if (listeners.size === 0) {
+          document.removeEventListener("pointerdown", handlePointerDown)
+        }
+      }
+    },
+    getSnapshot(): number {
+      return dismissKey
+    },
+  }
+}
+
 function useChart() {
   const context = React.useContext(ChartContext)
 
@@ -59,11 +136,25 @@ function ChartContainer({
   const uniqueId = React.useId()
   const chartId = `chart-${id ?? uniqueId.replace(/:/g, "")}`
 
+  const containerRef = React.useRef<HTMLDivElement>(null)
+  const [outsideTapStore] = React.useState(() => createOutsideTapStore(containerRef))
+  const outsideTapCount = React.useSyncExternalStore(
+    outsideTapStore.subscribe,
+    outsideTapStore.getSnapshot,
+    () => 0
+  )
+  const trigger = useChartTooltipTrigger()
+  // Only a click-triggered tooltip ever needs dismissing this way — hover already clears itself
+  // on mouseleave, so remounting the chart on every outside tap in hover mode would be pure waste.
+  const dismissKey = trigger === "click" ? outsideTapCount : 0
+
   return (
     <ChartContext.Provider value={{ config }}>
       <div
+        ref={containerRef}
         data-slot="chart"
         data-chart={chartId}
+        data-tooltip-trigger={trigger}
         className={cn(
           "flex aspect-video justify-center text-xs [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50 [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border [&_.recharts-radial-bar-background-sector]:fill-muted [&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted [&_.recharts-reference-line_[stroke='#ccc']]:stroke-border [&_.recharts-sector]:outline-hidden [&_.recharts-sector[stroke='#fff']]:stroke-transparent [&_.recharts-surface]:outline-hidden",
           className
@@ -72,6 +163,7 @@ function ChartContainer({
       >
         <ChartStyle id={chartId} config={config} />
         <RechartsPrimitive.ResponsiveContainer
+          key={dismissKey}
           initialDimension={initialDimension}
         >
           {children}
@@ -114,7 +206,28 @@ ${colorConfig
   )
 }
 
-const ChartTooltip = RechartsPrimitive.Tooltip
+function useDocumentBodyPortalTarget(): HTMLElement | null {
+  return React.useSyncExternalStore(
+    // `document.body` never changes for the life of the page, so there is nothing to subscribe to
+    // — this exists only to read a client-only value (no `document` during SSR) without `useEffect`.
+    () => () => {},
+    () => document.body,
+    () => null
+  )
+}
+
+/**
+ * Renders the tooltip through a React portal into `document.body` (card #170 Step 7) — escapes
+ * `card.tsx`'s `overflow-hidden` without editing that primitive at all, tried first per the plan.
+ * `null` during SSR/first paint (no `document`); recharts renders inline until the client value
+ * lands, which is harmless since the tooltip starts inactive either way.
+ */
+function ChartTooltip(
+  props: React.ComponentProps<typeof RechartsPrimitive.Tooltip>
+) {
+  const portalTarget = useDocumentBodyPortalTarget()
+  return <RechartsPrimitive.Tooltip portal={portalTarget} {...props} />
+}
 
 function ChartTooltipContent({
   active,
@@ -291,7 +404,7 @@ function ChartLegendContent({
   return (
     <div
       className={cn(
-        "flex items-center justify-center gap-4",
+        "flex flex-wrap items-center justify-center gap-4",
         verticalAlign === "top" ? "pb-3" : "pt-3",
         className
       )}

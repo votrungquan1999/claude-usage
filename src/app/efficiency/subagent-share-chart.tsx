@@ -7,6 +7,7 @@ import {
 	ChartContainer,
 	ChartTooltip,
 	ChartTooltipContent,
+	useChartTooltipTrigger,
 } from "@/components/ui/chart";
 import type { DailyEfficiencyRow } from "@/server/usage-queries";
 
@@ -21,6 +22,9 @@ export interface SubagentShareChartProps {
  * title, so no legend box — a day with zero priced cost renders as a gap, never a false 0%.
  */
 export function SubagentShareChart({ rows }: SubagentShareChartProps): React.JSX.Element {
+	// Hooks run before any early return, so the trigger is resolved even on the "No data" path.
+	const trigger = useChartTooltipTrigger();
+
 	// `totalEventCount`, not `eventCount` — and not `rows.length`, which stops meaning "no work"
 	// once absent days are gap-filled (D24).
 	if (rows.every((row) => row.totalEventCount === 0)) {
@@ -37,9 +41,17 @@ export function SubagentShareChart({ rows }: SubagentShareChartProps): React.JSX
 		<ChartContainer config={config} className="aspect-auto h-56 w-full">
 			<LineChart data={data}>
 				<CartesianGrid vertical={false} />
-				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tickFormatter={bucketAxisTick} />
+				<XAxis
+					dataKey="day"
+					tickLine={false}
+					axisLine={false}
+					tickMargin={8}
+					tickFormatter={bucketAxisTick}
+					interval="preserveStartEnd"
+					minTickGap={8}
+				/>
 				<YAxis tickLine={false} axisLine={false} width={40} tickFormatter={(value: number) => `${value}%`} />
-				<ChartTooltip content={<ChartTooltipContent />} />
+				<ChartTooltip trigger={trigger} content={<ChartTooltipContent />} />
 				<Line dataKey="sharePct" type="monotone" stroke="var(--color-sharePct)" strokeWidth={2} dot={false} connectNulls={false} />
 			</LineChart>
 		</ChartContainer>

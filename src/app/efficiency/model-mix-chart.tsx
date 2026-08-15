@@ -9,6 +9,7 @@ import {
 	ChartLegendContent,
 	ChartTooltip,
 	ChartTooltipContent,
+	useChartTooltipTrigger,
 } from "@/components/ui/chart";
 
 import type { SeriesColorMap } from "../cost-split-view/cost-split-view.type";
@@ -32,6 +33,9 @@ export interface ModelMixChartProps {
  * used, and a zero would claim they were not.
  */
 export function ModelMixChart({ rows, seriesKeys, colors }: ModelMixChartProps): React.JSX.Element {
+	// Hooks run before any early return, so the trigger is resolved even on the "No data" path.
+	const trigger = useChartTooltipTrigger();
+
 	if (rows.every((row) => row.totalEventCount === 0)) {
 		return <div className="grid h-64 w-full place-items-center text-sm text-muted-foreground">No data in this range</div>;
 	}
@@ -62,7 +66,15 @@ export function ModelMixChart({ rows, seriesKeys, colors }: ModelMixChartProps):
 		<ChartContainer config={config} className="aspect-auto h-64 w-full">
 			<AreaChart data={data}>
 				<CartesianGrid vertical={false} />
-				<XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tickFormatter={bucketAxisTick} />
+				<XAxis
+					dataKey="day"
+					tickLine={false}
+					axisLine={false}
+					tickMargin={8}
+					tickFormatter={bucketAxisTick}
+					interval="preserveStartEnd"
+					minTickGap={8}
+				/>
 				<YAxis
 					tickLine={false}
 					axisLine={false}
@@ -71,6 +83,7 @@ export function ModelMixChart({ rows, seriesKeys, colors }: ModelMixChartProps):
 					tickFormatter={(value: number) => `${Math.round(value * 100)}%`}
 				/>
 				<ChartTooltip
+					trigger={trigger}
 					content={<ChartTooltipContent formatter={(value) => `${Math.round(Number(value) * 100)}%`} />}
 				/>
 				<ChartLegend content={<ChartLegendContent />} />

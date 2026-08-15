@@ -101,7 +101,9 @@ export function buildSessionTimelineFixture(now: Date): UsageEventDocument[] {
 		messageId: `e2e-timeline-msg-${index + 1}`,
 		sessionId: SESSION_TIMELINE_SESSION_ID,
 		projectSlug: "personal/claude-usage-timeline",
-		machineId: "e2e-timeline-machine",
+		// 64-char hex, matching `corpus.ts`'s convention (card #170 Step 1) — nothing asserts on
+		// this id, but a fixture directory carrying two different id shapes invites confusion.
+		machineId: "176b68ec7e5be8b8b84c369dc18ed473c761d976f58568705ddf3ce4ff69d183",
 		model: MODEL,
 		// A minute apart so ordering is unambiguous; all still comfortably >30 days ago.
 		timestamp: new Date(placement.getTime() + index * 60_000),

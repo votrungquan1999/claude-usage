@@ -25,12 +25,21 @@ export const MOST_EXPENSIVE_SESSION_ID = "e2e-session-30";
 const DAY_SPAN = 10;
 
 export const PROJECT_SLUGS = ["personal/claude-usage", "personal/ai-kanban", "personal/lms"];
-export const MACHINE_IDS = ["e2e-macbook", "e2e-studio"];
+/** Production shape (card #170 Step 1): 64-char hex, like a real machine id, so a mobile-layout or
+ * nickname assertion can't pass vacuously against a short, already-readable placeholder. Neither
+ * string is a substring of the other, so `.filter({ hasText: ... })`'s substring matching in the
+ * specs that key off these can't accidentally cross-match. */
+export const MACHINE_IDS = [
+	"0ddfda8e5787540f000f31a99698c255240bfcefdd12bfb61ef432691c68f6d2",
+	"a1f909dbfba5753b265a08b451cf6a00f8f399fb354baef941592015c6211c1f",
+];
 export const MODELS = ["claude-opus-5", "claude-sonnet-5"];
 
 /** Only the first project carries one, so the Repo tab shows a real repository AND the
- * `(unattributed)` bucket that the other two collapse into. */
-const REPO_KEY = "e2e00000000000000000000000000000000000000000000000000000000beef";
+ * `(unattributed)` bucket that the other two collapse into. Exactly 64 hex characters —
+ * production repoKey shape (an unsalted SHA-256) — so the e2e leak guards that match on it are
+ * exercised for real, not vacuously against a shorter string a 64-hex regex can never match. */
+export const REPO_KEY = "e2e000000000000000000000000000000000000000000000000000000000beef";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 

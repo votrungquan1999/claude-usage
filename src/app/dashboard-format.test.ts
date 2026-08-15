@@ -1,11 +1,16 @@
 import { expect, test } from "vitest";
 
+import { UNATTRIBUTED_DIMENSION_VALUE } from "@/server/usage-queries";
+
 import {
 	assignSeriesColorSlots,
+	bucketAxisTick,
 	colorDomainWindow,
 	dayKeyInTimezone,
 	endOfDayInTimezone,
 	evaluateMachineSyncStatus,
+	machineDisplayName,
+	shortenMachineId,
 	bucketTurnDollars,
 	buildTurnTimeline,
 	fillMissingBuckets,
@@ -39,7 +44,7 @@ import {
 test("flags a machine stale when its last contact was more than 12h ago", () => {
 	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
 	const rows = evaluateMachineSyncStatus(
-		[{ machineId: "machine-stale", lastContactAt: new Date(now - 13 * 60 * 60 * 1000), lastAcceptedAt: null }],
+		[{ machineId: "machine-stale", lastContactAt: new Date(now - 13 * 60 * 60 * 1000), lastAcceptedAt: null, name: null }],
 		now,
 		"UTC",
 	);
@@ -47,6 +52,7 @@ test("flags a machine stale when its last contact was more than 12h ago", () => 
 	expect(rows).toStrictEqual([
 		{
 			machineId: "machine-stale",
+			name: null,
 			lastContact: "2026-08-01 09:00:00",
 			lastAccepted: "never",
 			stale: true,
@@ -58,7 +64,7 @@ test("carries lastAcceptedAt through to the view, not just lastContactAt (card #
 	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
 	const lastAcceptedAt = new Date(now - 2 * 60 * 60 * 1000);
 	const rows = evaluateMachineSyncStatus(
-		[{ machineId: "machine-worked", lastContactAt: new Date(now - 60 * 1000), lastAcceptedAt }],
+		[{ machineId: "machine-worked", lastContactAt: new Date(now - 60 * 1000), lastAcceptedAt, name: null }],
 		now,
 		"UTC",
 	);
@@ -69,7 +75,7 @@ test("carries lastAcceptedAt through to the view, not just lastContactAt (card #
 test("flags a machine whose last contact is meaningfully in the future as stale, instead of silently reading as fresh forever (card #161 adversarial fix pass F1, dashboard half — R14/R5)", () => {
 	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
 	const rows = evaluateMachineSyncStatus(
-		[{ machineId: "machine-future", lastContactAt: new Date(now + 60 * 60 * 1000), lastAcceptedAt: null }],
+		[{ machineId: "machine-future", lastContactAt: new Date(now + 60 * 60 * 1000), lastAcceptedAt: null, name: null }],
 		now,
 		"UTC",
 	);
@@ -80,7 +86,7 @@ test("flags a machine whose last contact is meaningfully in the future as stale,
 test("a few seconds of ordinary clock skew in the future does not flag the machine as stale (card #161 adversarial fix pass F1, dashboard half — matches src/status.mjs's CLOCK_SKEW_TOLERANCE_MS so the two signals agree at the boundary)", () => {
 	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
 	const rows = evaluateMachineSyncStatus(
-		[{ machineId: "machine-skew", lastContactAt: new Date(now + 5 * 1000), lastAcceptedAt: null }],
+		[{ machineId: "machine-skew", lastContactAt: new Date(now + 5 * 1000), lastAcceptedAt: null, name: null }],
 		now,
 		"UTC",
 	);
@@ -91,7 +97,7 @@ test("a few seconds of ordinary clock skew in the future does not flag the machi
 test("does not flag a machine whose last contact was within 12h", () => {
 	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
 	const rows = evaluateMachineSyncStatus(
-		[{ machineId: "machine-fresh", lastContactAt: new Date(now - 1 * 60 * 60 * 1000), lastAcceptedAt: null }],
+		[{ machineId: "machine-fresh", lastContactAt: new Date(now - 1 * 60 * 60 * 1000), lastAcceptedAt: null, name: null }],
 		now,
 		"UTC",
 	);
@@ -102,14 +108,56 @@ test("does not flag a machine whose last contact was within 12h", () => {
 test("evaluateMachineSyncStatus renders a null lastContactAt/lastAcceptedAt as the literal string \"never\" (card #161 Batch A fix pass, Fix 4 — D13's null-to-\"never\" decision now lives here, not in the untestable display component, so a unit test can actually assert it)", () => {
 	const now = new Date("2026-08-01T22:00:00.000Z").getTime();
 	const rows = evaluateMachineSyncStatus(
-		[{ machineId: "machine-unrecorded", lastContactAt: null, lastAcceptedAt: null }],
+		[{ machineId: "machine-unrecorded", lastContactAt: null, lastAcceptedAt: null, name: null }],
 		now,
 		"UTC",
 	);
 
 	expect(rows).toStrictEqual([
-		{ machineId: "machine-unrecorded", lastContact: "never", lastAccepted: "never", stale: false },
+		{ machineId: "machine-unrecorded", name: null, lastContact: "never", lastAccepted: "never", stale: false },
 	]);
+});
+
+test("shortenMachineId reads as the first 8 characters of a 64-char hex machine id (card #170 D7)", () => {
+	const machineId = "0ddfda8e5787540f000f31a99698c255240bfcefdd12bfb61ef432691c68f6d2";
+
+	expect(shortenMachineId(machineId)).toBe("0ddfda8e");
+});
+
+test("shortenMachineId leaves a short id exactly as it was, never padding or otherwise lengthening it (card #170 D18/R18 — the README setup probe posts machineId \"probe\")", () => {
+	expect(shortenMachineId("probe")).toBe("probe");
+});
+
+test("machineDisplayName shows the nickname when one is set, not the machine id (card #170 D1)", () => {
+	const machineId = "0ddfda8e5787540f000f31a99698c255240bfcefdd12bfb61ef432691c68f6d2";
+
+	expect(machineDisplayName("Studio", machineId)).toBe("Studio");
+});
+
+test("machineDisplayName falls back to the shortened machine id when no nickname is set (card #170 D6 — the fallback the mobile layout ships against before naming exists)", () => {
+	const machineId = "0ddfda8e5787540f000f31a99698c255240bfcefdd12bfb61ef432691c68f6d2";
+
+	expect(machineDisplayName(undefined, machineId)).toBe("0ddfda8e");
+});
+
+test("machineDisplayName treats an empty or whitespace-only nickname as ABSENT, not as a literal empty label (D14 — clearing a name falls back to the short id, same as never having one)", () => {
+	const machineId = "0ddfda8e5787540f000f31a99698c255240bfcefdd12bfb61ef432691c68f6d2";
+
+	expect(machineDisplayName("", machineId)).toBe("0ddfda8e");
+	expect(machineDisplayName("   ", machineId)).toBe("0ddfda8e");
+});
+
+test("machineDisplayName never shortens the (unattributed) sentinel, and shows no nickname for it — it is not a machine (R17, adversarial revalidation fix)", () => {
+	expect(machineDisplayName(undefined, UNATTRIBUTED_DIMENSION_VALUE)).toBe(UNATTRIBUTED_DIMENSION_VALUE);
+	// Even a stray nickname keyed under the sentinel's own text (should never happen — real
+	// machine ids are hex, never this literal string) must not surface as this row's name.
+	expect(machineDisplayName("Some Nickname", UNATTRIBUTED_DIMENSION_VALUE)).toBe(UNATTRIBUTED_DIMENSION_VALUE);
+});
+
+test("machineDisplayName still shows a REAL machine's nickname even when that nickname is literally \"(unattributed)\" — the sentinel guard keys on the machine id, not the nickname text, so a deliberately-named machine stays distinct from the missing-machineId bucket (R5)", () => {
+	const machineId = "0ddfda8e5787540f000f31a99698c255240bfcefdd12bfb61ef432691c68f6d2";
+
+	expect(machineDisplayName(UNATTRIBUTED_DIMENSION_VALUE, machineId)).toBe(UNATTRIBUTED_DIMENSION_VALUE);
 });
 
 test("a fully-priced total renders as a plain dollar amount", () => {
@@ -643,6 +691,17 @@ test("planDayBuckets leaves a window of 20 days or fewer at one bare-dated bucke
 	expect(buckets.labels).toHaveLength(20);
 	expect(buckets.labels[0]).toBe("2026-08-01");
 	expect(buckets.labels[19]).toBe("2026-08-20");
+});
+
+test("bucketAxisTick shortens a bucket's label to a two-digit-year tick, still naming which year a bar belongs to (card #170 D34/R28)", () => {
+	// A bare MM-DD tick would read "01-05" the same way in two different years once the corpus
+	// outlives a year — R28's exact failure. A two-digit year keeps the tick shorter than today's
+	// full YYYY-MM-DD while staying year-unambiguous.
+	expect(bucketAxisTick("2026-07-06")).toBe("26-07-06");
+});
+
+test("bucketAxisTick reads a multi-day bucket's tick from its FIRST day only, same as before shortening existed", () => {
+	expect(bucketAxisTick("2026-07-06…2026-07-10")).toBe("26-07-06");
 });
 
 test("planTurnBuckets leaves a session of 20 turns or fewer at one bucket per turn (card #161 Step 7)", () => {

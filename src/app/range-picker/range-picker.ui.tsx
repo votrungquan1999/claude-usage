@@ -10,6 +10,8 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectTrigger, SelectValue } from "@/components/ui/select";
 
+import { cn } from "@/lib/utils";
+
 import { dayKeyInTimezone } from "../dashboard-format";
 
 export interface RangePresetFieldProps {
@@ -32,7 +34,10 @@ export function RangePresetField({ value, items, onSelect, children }: RangePres
 		<Select items={items} value={value} onValueChange={(next: unknown) => onSelect(String(next))}>
 			{/* Named, because the trigger's only text is the current value: unlabelled it announces
 			    as "combobox, Last 30 days", which says what is chosen but never what it chooses. */}
-			<SelectTrigger className="w-44" aria-label="Date range">
+			<SelectTrigger
+				className={cn("w-44", "data-[size=default]:h-11", "sm:data-[size=default]:h-8")}
+				aria-label="Date range"
+			>
 				<SelectValue />
 			</SelectTrigger>
 			<SelectContent>{children}</SelectContent>
@@ -89,6 +94,17 @@ export function RangeCalendarField({
 			{/* PopoverContent hardcodes w-72, which clips a two-month grid. */}
 			<PopoverContent className="w-auto p-0">
 				<Calendar
+					className={cn(
+						"[--cell-size:--spacing(11)]",
+						"sm:[--cell-size:--spacing(7)]",
+						// D20: numberOfMonths stays 2 (two 44px-cell months would be ~528px tall — taller
+						// than a phone can spare, worse in landscape). The second month is hidden below
+						// `sm` rather than un-rendered: `Root > Months(div) > Month(div)×N` is
+						// react-day-picker's own documented custom-component nesting, and this is a
+						// structural position selector, not a class-name it renders internally.
+						"[&>div>div:nth-of-type(2)]:hidden",
+						"sm:[&>div>div:nth-of-type(2)]:flex",
+					)}
 					mode="range"
 					numberOfMonths={2}
 					timeZone={timeZone}

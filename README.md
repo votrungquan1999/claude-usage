@@ -111,8 +111,6 @@ failures, directories skipped) always prints, even on a run that ends badly.
 
 **`CLAUDE_USAGE_API_URL` is the base URL**, not the sync endpoint — the uploader appends `/api/sync` itself, handling a base that already ends in it or carries a trailing slash without doubling up. Posting straight at the base used to hit the dashboard page, which returned 200 and dropped every event (R31); a bare 200 is no longer treated as success, and the response must carry the sync route's own `{accepted, rejected}` body.
 
-**`CLAUDE_USAGE_MACHINE_LABEL` does nothing.** It appears in `.env.example` and nothing reads it, so the dashboard shows the raw machine id either way.
-
 ## Status
 
 All three phases are built and tested — 264 tests under vitest plus 17 Playwright e2e tests. Local readout (status line, report, installer, skill), cross-machine sync (mapper, `POST /api/sync`, both hooks, backfill), and the dashboard (aggregation layer, views, auth, split drill-down).

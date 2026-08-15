@@ -22,6 +22,11 @@ export interface UsageEventDocument {
 	// Opaque hash of the normalized git remote (D20) — absent, not null, when the project
 	// directory's cwd isn't a git repo, or no longer exists. Never the remote URL itself.
 	repoKey?: string;
+	// `<parent>/<name>` of the repository's MAIN checkout (card #177) — what the dashboard names
+	// the repository, so a busy worktree cannot take that name. Same two-segment shape as
+	// projectSlug, resolved from git rather than from any name pattern. Absent, not null, when no
+	// repository resolved or it has no main checkout (a bare repository).
+	repoName?: string;
 	// Absent, not null, when a session predates the account ledger (D7) — every one of the
 	// 201 real sessions today falls in this case, so this is the common shape, not an edge one.
 	accountUuid?: string;
@@ -141,10 +146,17 @@ export async function saveUsageEvents(db: Db, events: UsageEventDocument[]): Pro
 export interface MachineSyncStateDocument {
 	/** The machine id — the collection's natural key, not a synthetic one. */
 	_id: string;
-	/** Any well-formed 2xx sync, including one that accepted zero events. */
-	lastContactAt: Date;
+	/** Any well-formed 2xx sync, including one that accepted zero events. Absent, not a sentinel
+	 * date, for a machine `setMachineName` gave a row before it ever synced (D18 — a machine
+	 * visible only via `usage_events` is nameable, and naming it must not fabricate a sync history
+	 * it doesn't have). `machineSyncStatus`'s `state?.lastContactAt ?? null` already reads this
+	 * defensively. */
+	lastContactAt?: Date;
 	/** Only a sync that accepted at least one event. Absent, not null, otherwise (card #161 D4). */
 	lastAcceptedAt?: Date;
+	/** Operator-authored display name (D6/D15). Absent, not null, when never set —
+	 * written ONLY by `setMachineName`'s own unconditional update, never by `recordMachineSync`. */
+	name?: string;
 }
 
 /**
@@ -174,5 +186,29 @@ export async function recordMachineSync(db: Db, machineId: string, accepted: num
 			},
 		},
 		{ upsert: true },
+	);
+}
+
+/**
+ * Sets or clears a machine's display name — its OWN unconditional update, never folded into
+ * `recordMachineSync` (D6), which is deliberately skipped for backfills and empty batches and
+ * must not gate whether a machine can be named. Upsert is safe here because the caller has
+ * already confirmed `machineId` is in the roster (`machineSyncStatus`'s union) before calling
+ * this — a machine with events but no prior `machine_sync_state` row gets one created (D18),
+ * never a machine no roster check has vetted.
+ *
+ * @param db - the connected database
+ * @param machineId - the machine being renamed; must already be roster-verified by the caller
+ * @param name - the new display name, or `null` to clear it (D14)
+ */
+export async function setMachineName(db: Db, machineId: string, name: string | null): Promise<void> {
+	await db.collection<MachineSyncStateDocument>(MACHINE_SYNC_STATE_COLLECTION).updateOne(
+		{ _id: machineId },
+		name === null ? { $unset: { name: "" } } : { $set: { name } },
+		// Upsert only on the SET path. A D18 roster machine with no prior row may legitimately gain
+		// one here (name, no lastContactAt). But CLEARING has nothing to clear on a row that doesn't
+		// exist yet, so it must never mint one anyway — an upserted $unset on no match would create a
+		// doc with neither a name nor a lastContactAt, which no earlier writer would ever produce.
+		{ upsert: name !== null },
 	);
 }

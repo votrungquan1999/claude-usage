@@ -52,13 +52,26 @@ export function DashboardShell({
 	const { selectPreset, selectCustomRange, isPending } = useRangeNavigation();
 
 	return (
-		<main className={cn("gap-6 p-8", "grid")}>
+		<main className={cn("gap-6 p-8", "grid grid-cols-[minmax(0,1fr)]")}>
 			<div className={cn("items-center gap-4", "grid grid-cols-[1fr_auto]")}>{header}</div>
 
 			{kpis}
 			{machineSync}
 
-			<div className={cn("items-center gap-3", "grid grid-cols-[auto_auto_1fr]")}>
+			{/* min-w-0: without it this row's own grid-item minimum stays pinned to its unstacked
+			    369px min-content (Step 2) even though `main`'s track no longer forces it
+			    there. Stacks below `sm`, where the preset select and the calendar button (whose
+			    label text cannot wrap) no longer fit side by side. */}
+			<div
+				className={cn(
+					"items-center gap-3 min-w-0",
+					// Same track as `main`'s own `grid-cols-[minmax(0,1fr)]` above (byte-identical for a
+					// single column) — one spelling for "one column, sized to its own space" everywhere on
+					// this page, rather than two Tailwind utilities that happen to compile to the same rule.
+					"grid grid-cols-[minmax(0,1fr)]",
+					"sm:grid-cols-[auto_auto_1fr]",
+				)}
+			>
 				<RangePresetField
 					value={view.preset}
 					items={rangeLabels}

@@ -16,13 +16,18 @@ test("the seeded corpus renders its exact per-machine totals", async ({ page }) 
 	// test-only attribute.
 	const splitPanel = page.getByRole("tabpanel");
 
-	// Machine is the default split. Even-numbered sessions bill to e2e-studio ($0.25 × sum of
-	// 2…30 = $60.00), odd ones to e2e-macbook ($0.25 × sum of 1…29 = $56.25). Together they are
-	// the whole $116.25 corpus, so both being right means nothing was dropped or double-counted.
-	const studioRow = splitPanel.getByRole("row").filter({ hasText: "e2e-studio" });
+	// Machine is the default split. Even-numbered sessions bill to the studio machine ($0.25 × sum
+	// of 2…30 = $60.00), odd ones to the macbook machine ($0.25 × sum of 1…29 = $56.25). Together
+	// they are the whole $116.25 corpus, so both being right means nothing was dropped or
+	// double-counted. Ids are stored as 64-char hex (card #170 Step 1) but shown as the short
+	// display id (card #170 Step 4), which is what the row's own text now carries.
+	const studioRow = splitPanel.getByRole("row").filter({ hasText: "a1f909db" });
 	await expect(studioRow).toContainText("$60.00");
-	await expect(studioRow).toContainText("15");
+	// toContainText, not toHaveText, above would be vacuous — scoped to the last cell (Events, per
+	// dimension-totals-table.ui.tsx's column order) so a coincidental digit match elsewhere in the
+	// row can't pass this vacuously.
+	await expect(studioRow.getByRole("cell").last()).toHaveText("15");
 
-	const macbookRow = splitPanel.getByRole("row").filter({ hasText: "e2e-macbook" });
+	const macbookRow = splitPanel.getByRole("row").filter({ hasText: "0ddfda8e" });
 	await expect(macbookRow).toContainText("$56.25");
 });

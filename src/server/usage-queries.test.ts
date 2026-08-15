@@ -4,6 +4,7 @@ import { afterAll, beforeAll, expect, test, vi } from "vitest";
 
 import {
 	recordMachineSync,
+	setMachineName,
 	USAGE_EVENTS_COLLECTION,
 	ensureUsageIndexes,
 	saveUsageEvents,
@@ -151,11 +152,186 @@ test("a day boundary is Asia/Ho_Chi_Minh, not UTC (D16)", async () => {
 	expect(tzRows).toEqual([expect.objectContaining({ day: "2026-08-05", costUsd: 4 })]);
 });
 
-test("project rows sharing a repoKey (D20: a worktree checkout of the same repo) roll up into one row labeled with the shortest projectSlug in the group", async () => {
+test("a repository is named after its main checkout even when a worktree carries more of its events", async () => {
+	// The reported shape: a main checkout that ran once and a ticket worktree the operator lives in.
+	// Under the most-events rule the worktree takes the repository's name; repoName is what git said
+	// the repository actually is, so it decides regardless of who ran most.
+	//
+	// Its own day: this file's tests share one database with no per-test cleanup, so a day another
+	// test asserts totals for cannot be reused.
+	const range = dayRange("2027-02-03");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_canon_main",
+			messageId: "msg_canon_main",
+			timestamp: range.from,
+			projectSlug: "workspace/upredict-backend",
+			repoKey: "hash-upredict",
+			repoName: "workspace/upredict-backend",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_canon_wt_a",
+			messageId: "msg_canon_wt_a",
+			timestamp: range.from,
+			projectSlug: "workspace/upredict-backend-ubet-4179",
+			repoKey: "hash-upredict",
+			repoName: "workspace/upredict-backend",
+			costUsd: 2,
+		}),
+		event({
+			requestId: "req_canon_wt_b",
+			messageId: "msg_canon_wt_b",
+			timestamp: range.from,
+			projectSlug: "workspace/upredict-backend-ubet-4179",
+			repoKey: "hash-upredict",
+			repoName: "workspace/upredict-backend",
+			costUsd: 3,
+		}),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	const named = rows.filter((row) => row.dimensionValue === "workspace/upredict-backend");
+	expect(named).toEqual([expect.objectContaining({ costUsd: 6, eventCount: 3 })]);
+	expect(
+		rows.map((row) => row.dimensionValue),
+		"the worktree must not appear as a repository of its own",
+	).not.toContain("workspace/upredict-backend-ubet-4179");
+});
+
+test("drilling into a repository by its canonical name reaches every checkout, worktrees included", async () => {
+	// Under the canonical name the worktree's own folder name appears nowhere on screen. The row
+	// and the drill-down derive that name from two separate aggregations, so if only the row learns
+	// it, the drill-down resolves nothing and every repository row becomes a dead link.
+	const range = dayRange("2027-02-06");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_drill_main",
+			messageId: "msg_drill_main",
+			sessionId: "drill-main",
+			timestamp: range.from,
+			projectSlug: "workspace/dribbler",
+			repoKey: "hash-dribbler",
+			repoName: "workspace/dribbler",
+			costUsd: 1,
+		}),
+		...[1, 2].map((n) =>
+			event({
+				requestId: `req_drill_wt_${n}`,
+				messageId: `msg_drill_wt_${n}`,
+				sessionId: "drill-worktree",
+				timestamp: range.from,
+				projectSlug: "workspace/dribbler-ticket-3",
+				repoKey: "hash-dribbler",
+				repoName: "workspace/dribbler",
+				costUsd: 2,
+			}),
+		),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+	expect(rows.map((row) => row.dimensionValue)).toEqual(["workspace/dribbler"]);
+
+	const breakdown = await splitValueBreakdown(
+		db,
+		CostSplitDimension.Repo,
+		"workspace/dribbler",
+		range,
+		0,
+		25,
+		SessionSortOrder.Cost,
+	);
+
+	expect(breakdown.costUsd, "the whole repository, not just the checkout that shares its name").toBe(5);
+	expect(breakdown.eventCount).toBe(3);
+});
+
+test("the colour domain names a repository the same way the rendered rows do", async () => {
+	// The chart's colour/legend keys and the row labels come from two separate aggregations. If
+	// only one of them learns the canonical name they disagree, and a repository is drawn under one
+	// name while being listed under another — the D21/D20 consistency invariant.
+	const range = dayRange("2027-02-05");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_domain_main",
+			messageId: "msg_domain_main",
+			timestamp: range.from,
+			projectSlug: "workspace/sso",
+			repoKey: "hash-sso",
+			repoName: "workspace/sso",
+			costUsd: 1,
+		}),
+		...[1, 2].map((n) =>
+			event({
+				requestId: `req_domain_wt_${n}`,
+				messageId: `msg_domain_wt_${n}`,
+				timestamp: range.from,
+				projectSlug: "workspace/sso-pr-50",
+				repoKey: "hash-sso",
+				repoName: "workspace/sso",
+				costUsd: 2,
+			}),
+		),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+	const domain = await dimensionValueDomain(db, CostSplitDimension.Repo, range);
+
+	expect(rows.map((row) => row.dimensionValue)).toEqual(["workspace/sso"]);
+	expect(domain).toEqual(["workspace/sso"]);
+});
+
+test("two machines that lay the same repository out under different parents still settle on one name", async () => {
+	// One repository, two machines whose parent folders differ — so git honestly reports two
+	// different canonical names for it. The window must still show ONE row under ONE name, chosen
+	// by the same ranking rather than by whichever row Mongo happened to return first.
+	const range = dayRange("2027-02-04");
+	await saveUsageEvents(db, [
+		event({
+			requestId: "req_layout_mac",
+			messageId: "msg_layout_mac",
+			timestamp: range.from,
+			machineId: "mac",
+			projectSlug: "workspace/icp",
+			repoKey: "hash-icp",
+			repoName: "workspace/icp",
+			costUsd: 1,
+		}),
+		event({
+			requestId: "req_layout_linux_a",
+			messageId: "msg_layout_linux_a",
+			timestamp: range.from,
+			machineId: "linux",
+			projectSlug: "code/icp",
+			repoKey: "hash-icp",
+			repoName: "code/icp",
+			costUsd: 2,
+		}),
+		event({
+			requestId: "req_layout_linux_b",
+			messageId: "msg_layout_linux_b",
+			timestamp: range.from,
+			machineId: "linux",
+			projectSlug: "code/icp",
+			repoKey: "hash-icp",
+			repoName: "code/icp",
+			costUsd: 3,
+		}),
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	// `code/icp` carries two of the three events, so volume decides — the same rule that ranks slugs.
+	expect(rows).toEqual([expect.objectContaining({ dimensionValue: "code/icp", costUsd: 6, eventCount: 3 })]);
+});
+
+test("project rows sharing a repoKey (D20: a worktree checkout of the same repo) roll up into one row; with no canonical name recorded, the shortest projectSlug wins the tie", async () => {
 	const range = dayRange("2026-08-05");
 	await saveUsageEvents(db, [
-		// Same repository, two checkouts — the main one and a ticket-branch worktree. The
-		// worktree's slug is longer, so the merged row must be labeled with the main checkout's.
+		// Same repository, two checkouts — the main one and a ticket-branch worktree. Neither
+		// carries a canonical name (events synced before card #177), and they tie on events, so the
+		// tie-break decides: the worktree's slug is longer, so the main checkout's name wins.
 		event({
 			requestId: "req_worktree_main",
 			messageId: "msg_worktree_main",
@@ -750,6 +926,18 @@ test("a machine that has contacted the server but has no usage_events (every eve
 	expect(row?.lastAcceptedAt, "zero accepted events means lastAcceptedAt stays null").toBeNull();
 });
 
+test("machineSyncStatus reports a machine's stored display name, and null when none has been set (card #170 Step 10)", async () => {
+	const isolated = client.db("claude-usage-machine-sync-name");
+	await saveUsageEvents(isolated, [event({ requestId: "req_sync_name", machineId: "machine-named" })]);
+	await saveUsageEvents(isolated, [event({ requestId: "req_sync_unnamed", machineId: "machine-unnamed" })]);
+	await setMachineName(isolated, "machine-named", "Alice's MacBook");
+
+	const rows = await machineSyncStatus(isolated);
+
+	expect(rows.find((r) => r.machineId === "machine-named")?.name).toBe("Alice's MacBook");
+	expect(rows.find((r) => r.machineId === "machine-unnamed")?.name).toBeNull();
+});
+
 test("dailyEfficiency reports a day's unpriced events, so a month total can be shown as a lower bound (D17)", async () => {
 	const range = dayRange("2026-09-14");
 	await saveUsageEvents(db, [
@@ -811,7 +999,7 @@ test("a row missing its project slug entirely joins the same unattributed repo b
 	expect(rows).toEqual([expect.objectContaining({ dimensionValue: "(unattributed)", costUsd: 5, eventCount: 2 })]);
 });
 
-test("on the repo split, checkouts sharing a repoKey merge under the shortest project slug (D20)", async () => {
+test("on the repo split, checkouts sharing a repoKey merge into one row; with no canonical name recorded, the shortest slug wins the tie (D20)", async () => {
 	const range = dayRange("2026-09-22");
 	await saveUsageEvents(db, [
 		event({ requestId: "req_rw_main", messageId: "msg_rw_main", timestamp: range.from, projectSlug: "personal/ccp", repoKey: "hash-rw", costUsd: 1 }),
@@ -832,9 +1020,9 @@ test("on the repo split, checkouts sharing a repoKey merge under the shortest pr
 });
 
 test("a repository keeps ONE label across the window, including days when only its worktree ran", async () => {
-	// Picking the shortest slug per DAY splits one repository into two ranked rows as soon as a
-	// worktree works a branch alone for a day — each carrying part of the cost, and each linking
-	// to part of the sessions.
+	// Picking a label per DAY splits one repository into two ranked rows as soon as a worktree
+	// works a branch alone for a day — each carrying part of the cost, and each linking to part of
+	// the sessions. Labels are resolved across the whole window instead, for both tiers.
 	const range = { from: new Date("2026-12-01T00:00:00.000Z"), to: new Date("2026-12-02T23:59:59.999Z") };
 	await saveUsageEvents(db, [
 		event({

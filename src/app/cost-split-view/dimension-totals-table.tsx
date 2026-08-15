@@ -10,6 +10,10 @@ export interface DimensionTotalsTableProps {
 	/** The URL's name for this split — carried, not derived from the query dimension, so the two
 	 * vocabularies stay mapped at one visible place. */
 	tab: SplitTab;
+	/** LABEL only (D12/D17), Machine tab only — a raw dimensionValue -> display-text map, same
+	 * shape and same reasoning as `CostChart`'s own `labels` prop (D32): a plain `Record`, not a
+	 * formatter function, so it can cross from the server caller into this "use client" table. */
+	labels?: Record<string, string>;
 }
 
 /**
@@ -21,6 +25,9 @@ export function DimensionTotalsTable({
 	dimensionLabel,
 	colors,
 	tab,
+	labels,
 }: DimensionTotalsTableProps): React.JSX.Element {
-	return <DimensionTotalsTableDisplay totals={totals} dimensionLabel={dimensionLabel} colors={colors} tab={tab} />;
+	return (
+		<DimensionTotalsTableDisplay totals={totals} dimensionLabel={dimensionLabel} colors={colors} tab={tab} labels={labels} />
+	);
 }

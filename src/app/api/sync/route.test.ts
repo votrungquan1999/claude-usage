@@ -500,7 +500,59 @@ test("a second sync from the same machine updates its existing row rather than a
 			.countDocuments({ _id: "machine-sync-repeat" }),
 		"one row per machine, not one per sync",
 	).toBe(1);
-	expect(second?.lastContactAt.getTime()).toBeGreaterThanOrEqual(first?.lastContactAt.getTime() ?? 0);
+	expect(second?.lastContactAt?.getTime()).toBeGreaterThanOrEqual(first?.lastContactAt?.getTime() ?? 0);
+});
+
+test("the canonical repository name survives the server's own allowlist and reaches the stored document", async () => {
+	// Same gap the session-title test guards: the route rebuilds each event as a fresh literal, so
+	// a field the mapper sends is silently dropped unless the route copies it too.
+	const response = await POST(
+		syncRequest(
+			{
+				machineId: "machine-repo-name",
+				events: [
+					usageEvent({
+						requestId: "req_repo_name",
+						messageId: "msg_repo_name",
+						projectSlug: "workspace/upredict-backend-ubet-4179",
+						repoKey: "hash-upredict",
+						repoName: "workspace/upredict-backend",
+					}),
+				],
+			},
+			{ "x-claude-usage-secret": SECRET },
+		),
+	);
+	expect(response.status).toBe(200);
+
+	const stored = await db.collection("usage_events").findOne({ requestId: "req_repo_name" });
+	expect(stored?.repoName).toBe("workspace/upredict-backend");
+	expect(stored?.projectSlug, "the checkout that ran is still stored as itself").toBe(
+		"workspace/upredict-backend-ubet-4179",
+	);
+});
+
+test("an event whose canonical repository name is not a string is rejected, never stored as a non-string label", async () => {
+	// This value becomes a row label, a chart series and a drill-down URL segment. A non-string
+	// there is the same class of defect as a mistyped model or costUsd, and gets the same answer.
+	const response = await POST(
+		syncRequest(
+			{
+				machineId: "machine-repo-name-types",
+				events: [
+					usageEvent({
+						requestId: "req_repo_name_type",
+						messageId: "msg_repo_name_type",
+						repoName: { $ne: null },
+					}),
+				],
+			},
+			{ "x-claude-usage-secret": SECRET },
+		),
+	);
+
+	expect(await response.json()).toEqual({ accepted: 0, rejected: 1 });
+	expect(await db.collection("usage_events").findOne({ requestId: "req_repo_name_type" })).toBeNull();
 });
 
 test("the session title survives the server's own allowlist and reaches the stored document", async () => {

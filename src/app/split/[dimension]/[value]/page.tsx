@@ -3,11 +3,11 @@ import { Suspense } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { type CostSplitDimension, DASHBOARD_TIMEZONE, SessionSortOrder } from "@/server/usage-queries";
+import { CostSplitDimension, DASHBOARD_TIMEZONE, SessionSortOrder } from "@/server/usage-queries";
 
 import { CardErrorBoundary } from "../../../card-error-boundary.ui";
-import { formatLowerBoundCost, parseDashboardRange, readSearchParams } from "../../../dashboard-format";
-import { loadEarliestEventMs, loadSplitValueBreakdown } from "../../../dashboard-loaders";
+import { formatLowerBoundCost, machineDisplayName, parseDashboardRange, readSearchParams } from "../../../dashboard-format";
+import { loadEarliestEventMs, loadMachineSyncStatus, loadSplitValueBreakdown } from "../../../dashboard-loaders";
 import { CardErrorNotice, CardPlaceholder } from "../../../dashboard-shell.ui";
 import { dashboardHref } from "../../../href";
 import { SessionSort } from "../../../session-list/session-list.type";
@@ -49,10 +49,29 @@ export default async function SplitValuePage({ params, searchParams }: SplitValu
 	const earliestMs = await loadEarliestEventMs();
 	const view = parseDashboardRange(query, new Date(), earliestMs === null ? null : new Date(earliestMs), DASHBOARD_TIMEZONE);
 
+	// LABEL only, computed from the raw `label` AFTER it resolved the route below — the machine
+	// lookup itself (`SplitValueSessions`) always receives the raw `label`, never this display form.
+	// D1's surface list names this heading explicitly, alongside the tile/tables/legend that already
+	// show the nickname — this card was the one surface still falling back to the short id. A
+	// failed read leaves `machineNickname` undefined rather than throwing (D19), so the heading
+	// still renders under the short id instead of blanking the whole card.
+	let machineNickname: string | undefined;
+	if (route.dimension === CostSplitDimension.Machine) {
+		try {
+			const syncRows = await loadMachineSyncStatus();
+			const nicknameByMachineId = Object.fromEntries(syncRows.map((row) => [row.machineId, row.name ?? undefined]));
+			machineNickname = nicknameByMachineId[label];
+		} catch {
+			// D19 — machineDisplayName below falls back to the short id instead.
+		}
+	}
+	const displayValue =
+		route.dimension === CostSplitDimension.Machine ? machineDisplayName(machineNickname, label) : label;
+
 	return (
 		<SplitValueLayout>
 			<BackToDashboard href={dashboardHref(query, { tab: route.tab })}>Back to dashboard</BackToDashboard>
-			<SplitValueHeading label={route.label} value={label} />
+			<SplitValueHeading label={route.label} value={displayValue} />
 
 			<CardErrorBoundary fallback={<CardErrorNotice>This drill-down could not be loaded</CardErrorNotice>}>
 				<Suspense fallback={<CardPlaceholder />}>

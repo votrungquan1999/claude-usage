@@ -79,10 +79,16 @@ export function SessionPager({ currentPage, pageCount }: SessionPagerProps): Rea
 						href={hrefForPage(previousPage)}
 						aria-disabled={currentPage === 1}
 						onClick={(event) => handleClick(event, previousPage)}
+						className={cn("h-11", "sm:h-8")}
 					/>
 				</PaginationItem>
 				<PaginationItem>
-					<PaginationLink href={hrefForPage(currentPage)} isActive size="default">
+					<PaginationLink
+						href={hrefForPage(currentPage)}
+						isActive
+						size="default"
+						className={cn("h-11", "sm:h-8")}
+					>
 						{`${currentPage} / ${pageCount}`}
 					</PaginationLink>
 				</PaginationItem>
@@ -91,6 +97,7 @@ export function SessionPager({ currentPage, pageCount }: SessionPagerProps): Rea
 						href={hrefForPage(nextPage)}
 						aria-disabled={currentPage === pageCount}
 						onClick={(event) => handleClick(event, nextPage)}
+						className={cn("h-11", "sm:h-8")}
 					/>
 				</PaginationItem>
 			</PaginationContent>
@@ -117,7 +124,11 @@ export function SessionSortField({ value, items, children }: SessionSortFieldPro
 	return (
 		<Select items={items} value={value} onValueChange={(next: unknown) => selectSort(String(next))}>
 			{/* Named for the same reason as the range picker's trigger — see RangePresetField. */}
-			<SelectTrigger size="sm" className="w-48" aria-label="Sort sessions">
+			<SelectTrigger
+				size="sm"
+				className={cn("w-48", "data-[size=sm]:h-11", "sm:data-[size=sm]:h-7")}
+				aria-label="Sort sessions"
+			>
 				<SelectValue />
 			</SelectTrigger>
 			<SelectContent>{children}</SelectContent>

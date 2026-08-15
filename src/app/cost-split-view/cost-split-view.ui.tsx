@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 
-import { Tabs } from "@/components/ui/tabs";
+import { Tabs, TabsList } from "@/components/ui/tabs";
 
 import { cn } from "@/lib/utils";
 
@@ -27,6 +27,28 @@ export function SplitTabs({ initialTab, children }: SplitTabsProps): React.JSX.E
 		<Tabs defaultValue={initialTab} onValueChange={(next: unknown) => selectTab(String(next) as SplitTab)}>
 			{children}
 		</Tabs>
+	);
+}
+
+export interface SplitTabsListProps {
+	/** The `<TabsTrigger>` list, composed on the server (`cost-splits.tsx`). */
+	children: ReactNode;
+}
+
+/**
+ * The `Machine | Project | Model | Repo` strip (D5). Stays a strip of tabs — never a `Select`,
+ * which would give the same control two identities across viewports — and scrolls sideways rather
+ * than wrapping if it ever outgrows the width. 44px tall on mobile only (D4); the override repeats
+ * `TabsList`'s own `group-data-horizontal/tabs:h-8` modifier chain rather than a plain `h-11`,
+ * because a plain class cannot beat a gated variant through `twMerge`.
+ */
+export function SplitTabsList({ children }: SplitTabsListProps): React.JSX.Element {
+	return (
+		<TabsList
+			className={cn("overflow-x-auto max-w-full", "group-data-horizontal/tabs:h-11", "sm:group-data-horizontal/tabs:h-8")}
+		>
+			{children}
+		</TabsList>
 	);
 }
 

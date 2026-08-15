@@ -2,7 +2,15 @@
 
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
-import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import {
+	type ChartConfig,
+	ChartContainer,
+	ChartLegend,
+	ChartLegendContent,
+	ChartTooltip,
+	ChartTooltipContent,
+	useChartTooltipTrigger,
+} from "@/components/ui/chart";
 
 import {
 	isMainSeriesEmptyWithSubagentActivity,
@@ -33,6 +41,9 @@ export interface TurnTimelineChartProps {
  * disappearing or folding into the main series.
  */
 export function TurnTimelineChart({ main, subagent, turnCount, unpricedEventCount }: TurnTimelineChartProps): React.JSX.Element {
+	// Hooks run before any early return, so the trigger is resolved even on the empty-state path.
+	const trigger = useChartTooltipTrigger();
+
 	const hasAnyDollars = [...main, ...subagent].some((row) => row.carryUsd !== 0 || row.newUsd !== 0);
 	if (hasAnyDollars === false) {
 		return (
@@ -70,9 +81,17 @@ export function TurnTimelineChart({ main, subagent, turnCount, unpricedEventCoun
 			<ChartContainer config={config} className="aspect-auto h-64 w-full">
 				<BarChart data={data}>
 					<CartesianGrid vertical={false} />
-					<XAxis dataKey="turnBucket" tickLine={false} axisLine={false} tickMargin={8} />
+					<XAxis
+						dataKey="turnBucket"
+						tickLine={false}
+						axisLine={false}
+						tickMargin={8}
+						interval="preserveStartEnd"
+						minTickGap={8}
+					/>
 					<YAxis tickLine={false} axisLine={false} width={64} tickFormatter={(value: number) => `$${value.toFixed(2)}`} />
 					<ChartTooltip
+						trigger={trigger}
 						content={
 							<ChartTooltipContent
 								labelFormatter={(label, tooltipPayload) => {

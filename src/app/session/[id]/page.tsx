@@ -2,11 +2,17 @@ import { notFound } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getDatabase } from "@/server/database";
 import { DASHBOARD_TIMEZONE, getSessionBreakdown, getSessionTurns } from "@/server/usage-queries";
 
-import { buildTurnTimeline, formatInstantInTimezone, formatLowerBoundCost, turnTimelineDivergenceNote } from "../../dashboard-format";
+import {
+	buildTurnTimeline,
+	formatInstantInTimezone,
+	formatLowerBoundCost,
+	machineDisplayName,
+	turnTimelineDivergenceNote,
+} from "../../dashboard-format";
+import { SessionDetailLayout, SessionModelCostTable } from "./session-detail.ui";
 import { TurnTimelineChart } from "./turn-timeline.ui";
 
 interface SessionPageProps {
@@ -29,7 +35,7 @@ export default async function SessionPage({ params }: SessionPageProps): Promise
 	const timelineDivergenceNote = turnTimelineDivergenceNote(timeline, summary.totalCostUsd);
 
 	return (
-		<main className="grid gap-6 p-8">
+		<SessionDetailLayout>
 			<h1 className="text-lg font-medium text-foreground">Session {summary.sessionId}</h1>
 
 			<Card>
@@ -38,7 +44,7 @@ export default async function SessionPage({ params }: SessionPageProps): Promise
 				</CardHeader>
 				<CardContent className="grid gap-2 text-sm text-foreground">
 					<div>Project: {summary.projectSlug}</div>
-					<div>Machine: {summary.machineId}</div>
+					<div>Machine: {machineDisplayName(undefined, summary.machineId)}</div>
 					<div>Account: {summary.accountUuid ?? "unattributed"}</div>
 					<div>
 						Started: {formatInstantInTimezone(summary.startedAt, DASHBOARD_TIMEZONE)} — Ended:{" "}
@@ -60,28 +66,7 @@ export default async function SessionPage({ params }: SessionPageProps): Promise
 					<CardTitle>Cost by model</CardTitle>
 				</CardHeader>
 				<CardContent>
-					<Table>
-						<TableHeader>
-							<TableRow>
-								<TableHead>Model</TableHead>
-								<TableHead className="text-right">Cost</TableHead>
-								<TableHead className="text-right">Subagent cost</TableHead>
-								<TableHead className="text-right">Events</TableHead>
-							</TableRow>
-						</TableHeader>
-						<TableBody>
-							{summary.byModel.map((row) => (
-								<TableRow key={row.model}>
-									<TableCell>{row.model}</TableCell>
-									<TableCell className="text-right">{formatLowerBoundCost(row.costUsd, row.unpricedEventCount)}</TableCell>
-									<TableCell className="text-right">
-										{formatLowerBoundCost(row.subagentCostUsd, row.subagentUnpricedEventCount)}
-									</TableCell>
-									<TableCell className="text-right">{row.eventCount}</TableCell>
-								</TableRow>
-							))}
-						</TableBody>
-					</Table>
+					<SessionModelCostTable rows={summary.byModel} />
 				</CardContent>
 			</Card>
 
@@ -99,6 +84,6 @@ export default async function SessionPage({ params }: SessionPageProps): Promise
 					{timelineDivergenceNote && <p className="mt-2 text-xs text-muted-foreground">{timelineDivergenceNote}</p>}
 				</CardContent>
 			</Card>
-		</main>
+		</SessionDetailLayout>
 	);
 }

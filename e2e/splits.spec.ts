@@ -1,10 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+import { REPO_KEY } from "./fixtures/corpus";
+
 test("switching the split re-groups the same spend by a different dimension", async ({ page }) => {
 	await page.goto("/");
 
 	const splitPanel = page.getByRole("tabpanel");
-	await expect(splitPanel.getByRole("row").filter({ hasText: "e2e-studio" })).toContainText("$60.00");
+	// The row's link text is the short display id (card #170 Step 4), not the full 64-char hash.
+	await expect(splitPanel.getByRole("row").filter({ hasText: "a1f909db" })).toContainText("$60.00");
 
 	await page.getByRole("tab", { name: "Project", exact: true }).click();
 
@@ -16,7 +19,7 @@ test("switching the split re-groups the same spend by a different dimension", as
 	const lmsRow = splitPanel.getByRole("row").filter({ hasText: "personal/lms" });
 	await expect(lmsRow).toContainText("$41.25");
 	await expect(lmsRow).toContainText("10");
-	await expect(splitPanel.getByRole("row").filter({ hasText: "e2e-studio" })).toHaveCount(0);
+	await expect(splitPanel.getByRole("row").filter({ hasText: "a1f909db" })).toHaveCount(0);
 });
 
 test("the repository split folds every repo-less project into one unattributed bucket", async ({ page }) => {
@@ -36,7 +39,11 @@ test("the repository split folds every repo-less project into one unattributed b
 	await expect(unattributedRow).toContainText("20");
 
 	// The one project that DOES carry a repoKey is labelled by its slug, never by the hash — the
-	// repoKey is an unsalted SHA-256 of a git remote and must not reach the browser.
+	// repoKey is an unsalted SHA-256 of a git remote and must not reach the browser. The bare
+	// hex-shape check was dead once machine ids also became 64-char hex (this panel shows only repo
+	// rows today, but the regex alone can't tell a leaked repoKey from a legitimate hex id); the
+	// literal repoKey match below is shape-independent and catches the leak directly.
 	await expect(splitPanel.getByRole("row").filter({ hasText: "personal/claude-usage" })).toContainText("$36.25");
 	await expect(splitPanel.getByText(/[0-9a-f]{64}/)).toHaveCount(0);
+	await expect(splitPanel.getByText(REPO_KEY)).toHaveCount(0);
 });

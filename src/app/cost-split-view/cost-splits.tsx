@@ -1,14 +1,14 @@
 import { Suspense } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TabsContent, TabsTrigger } from "@/components/ui/tabs";
 import { CostSplitDimension } from "@/server/usage-queries";
 
 import { CardErrorBoundary } from "../card-error-boundary.ui";
 import { CardErrorNotice, CardPlaceholder } from "../dashboard-shell.ui";
 import { CostSplitView } from "./cost-split-view";
 import { SplitTab } from "./cost-split-view.type";
-import { SplitTabs } from "./cost-split-view.ui";
+import { SplitTabs, SplitTabsList } from "./cost-split-view.ui";
 
 export interface CostSplitsProps {
 	/** The split the URL asked for. */
@@ -34,12 +34,12 @@ export function CostSplits({ initialTab, fromMs, toMs, domainFromMs, domainToMs 
 			</CardHeader>
 			<CardContent>
 				<SplitTabs initialTab={initialTab}>
-					<TabsList>
+					<SplitTabsList>
 						<TabsTrigger value={SplitTab.Machine}>Machine</TabsTrigger>
 						<TabsTrigger value={SplitTab.Project}>Project</TabsTrigger>
 						<TabsTrigger value={SplitTab.Model}>Model</TabsTrigger>
 						<TabsTrigger value={SplitTab.Repo}>Repo</TabsTrigger>
-					</TabsList>
+					</SplitTabsList>
 					<TabsContent value={SplitTab.Machine}>
 						<SplitPanel
 							dimension={CostSplitDimension.Machine}

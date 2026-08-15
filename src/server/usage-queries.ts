@@ -557,12 +557,19 @@ const MATCHES_NOTHING = { _id: { $in: [] } };
 async function repoKeyForLabel(db: Db, value: string, range: DateRange): Promise<string | undefined> {
 	const pairs = await db
 		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
-		.aggregate<{ _id: { projectSlug: string | null; repoKey: string }; eventCount: number }>([
+		.aggregate<{ _id: { projectSlug: string | null; repoKey: string }; eventCount: number; repoName?: string | null }>([
 			{ $match: { timestamp: { $gte: range.from, $lte: range.to }, repoKey: { $exists: true } } },
-			// The count is what `repoLabelsAcrossRange` ranks on, so it has to be REAL here: feeding
-			// zeroes would tie every slug and silently fall through to the shortest one, giving this
-			// side a different answer from the rows the dashboard rendered.
-			{ $group: { _id: { projectSlug: "$projectSlug", repoKey: "$repoKey" }, eventCount: { $sum: 1 } } },
+			// Both inputs `repoLabelsAcrossRange` reads have to be REAL here, or this side answers
+			// differently from the rows the dashboard rendered and the row becomes a dead link.
+			// The count, because feeding zeroes would tie every slug and fall through to the shortest;
+			// and `repoName`, because without it this side still ranks slugs while the rows no longer do.
+			{
+				$group: {
+					_id: { projectSlug: "$projectSlug", repoKey: "$repoKey" },
+					eventCount: { $sum: 1 },
+					repoName: { $max: "$repoName" },
+				},
+			},
 		])
 		.toArray();
 
@@ -575,6 +582,7 @@ async function repoKeyForLabel(db: Db, value: string, range: DateRange): Promise
 			unpricedEventCount: 0,
 			eventCount: pair.eventCount,
 			repoKey: pair._id.repoKey,
+			repoName: pair.repoName ?? undefined,
 		})),
 	);
 
@@ -942,9 +950,7 @@ export async function costPerDay(
 					_id: dimensionGroupId(dimension, {
 						$dateToString: { date: "$timestamp", format: "%Y-%m-%d", timezone: DASHBOARD_TIMEZONE },
 					}),
-					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
-					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
-					eventCount: { $sum: 1 },
+					...dimensionAccumulators(dimension),
 				},
 			},
 			{ $sort: { "_id.day": 1 } },
@@ -959,8 +965,9 @@ export async function costPerDay(
 	if (dimension === CostSplitDimension.Model) return mergeByNormalizedDimension(dimensionRows).map(dropRepoKey);
 	// D20: worktrees group by the git remote resolved and hashed at sync time, not by name — a
 	// name-prefix rule was explicitly rejected (a confirmed real false positive: an unrelated
-	// repo can share a prefix with a genuine worktree pair). repoKey is opaque, so the merged
-	// row is labeled with the SHORTEST projectSlug in the group (the main checkout).
+	// repo can share a prefix with a genuine worktree pair). repoKey is opaque, so the merged row
+	// takes its label from `repoLabelsAcrossRange` — git's own main-checkout name where one was
+	// recorded, else the slug that carried the most events.
 	if (dimension === CostSplitDimension.Project) return mergeProjectRowsByRepoKey(dimensionRows).map(dropRepoKey);
 	// D14/D31: the same repoKey grouping as Project, but every repo-less row folds into ONE named
 	// bucket — on this tab "no repository" is a single real answer.
@@ -1002,6 +1009,9 @@ export interface MachineSyncStatusRow {
 	machineId: string;
 	lastContactAt: Date | null;
 	lastAcceptedAt: Date | null;
+	/** Operator-assigned display name (D1/D6), or `null` when never set — written by
+	 * `setMachineName` (Step 9), read here so every card can prefer it over the raw id (Step 10). */
+	name: string | null;
 }
 
 /**
@@ -1039,6 +1049,7 @@ export async function machineSyncStatus(db: Db): Promise<MachineSyncStatusRow[]>
 				machineId,
 				lastContactAt: state?.lastContactAt ?? null,
 				lastAcceptedAt: state?.lastAcceptedAt ?? null,
+				name: state?.name ?? null,
 			};
 		})
 		.sort((a, b) => a.machineId.localeCompare(b.machineId));
@@ -1070,9 +1081,7 @@ export async function dimensionValueDomain(db: Db, dimension: CostSplitDimension
 			{
 				$group: {
 					_id: dimensionGroupId(dimension, COLOR_DOMAIN_SENTINEL_DAY),
-					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
-					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
-					eventCount: { $sum: 1 },
+					...dimensionAccumulators(dimension),
 				},
 			},
 		])
@@ -1093,7 +1102,7 @@ export async function dimensionValueDomain(db: Db, dimension: CostSplitDimension
 
 /** Label for a row whose grouping field was missing/null at ingest — a rogue or older client can
  * post an event without it (D7 gives the account dimension the same "unattributed" treatment). */
-const UNATTRIBUTED_DIMENSION_VALUE = "(unattributed)";
+export const UNATTRIBUTED_DIMENSION_VALUE = "(unattributed)";
 
 /** Shape of one row Mongo's `$group` returns before the raw-model merge. `dimensionValue` can be
  * `null` when the grouped field was missing on the stored document, and `repoKey` likewise when the
@@ -1103,6 +1112,9 @@ interface RawDimensionRow {
 	costUsd: number;
 	unpricedEventCount: number;
 	eventCount: number;
+	/** Accumulated, not grouped on — absent for the dimensions that do not merge by repository,
+	 * and `null` when no event in the group carried one. */
+	repoName?: string | null;
 }
 
 /**
@@ -1119,8 +1131,43 @@ interface RawDimensionRow {
  * @param day - the `$dateToString` expression, or the sentinel the colour domain groups on
  */
 function dimensionGroupId(dimension: CostSplitDimension, day: unknown): Record<string, unknown> {
-	const mergesByRepo = dimension === CostSplitDimension.Project || dimension === CostSplitDimension.Repo;
-	return { day, dimensionValue: `$${groupingFieldFor(dimension)}`, ...(mergesByRepo && { repoKey: "$repoKey" }) };
+	return {
+		day,
+		dimensionValue: `$${groupingFieldFor(dimension)}`,
+		...(mergesByRepo(dimension) && { repoKey: "$repoKey" }),
+	};
+}
+
+/**
+ * Whether a dimension folds several checkouts of one repository together — the two that read
+ * `repoKey`, and so the two that need a repository name to label the result with.
+ *
+ * @param dimension - the split being grouped
+ */
+function mergesByRepo(dimension: CostSplitDimension): boolean {
+	return dimension === CostSplitDimension.Project || dimension === CostSplitDimension.Repo;
+}
+
+/**
+ * The accumulators a daily split and the colour domain share. Extracted because the two feed the
+ * SAME label map, so a field added to one and forgotten in the other makes a repository render
+ * under one name and get coloured under another — which is exactly what happened when `repoName`
+ * went into `costPerDay` alone.
+ *
+ * `repoName` is accumulated rather than grouped on: within one (day, projectSlug, repoKey) group
+ * every event describes the same checkout, so it adds no cardinality. `$max` prefers a resolved
+ * name over a missing one, since BSON sorts null below any string — a machine that could not
+ * resolve the name never outvotes one that could.
+ *
+ * @param dimension - the split being grouped
+ */
+function dimensionAccumulators(dimension: CostSplitDimension): Record<string, unknown> {
+	return {
+		costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
+		unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
+		eventCount: { $sum: 1 },
+		...(mergesByRepo(dimension) && { repoName: { $max: "$repoName" } }),
+	};
 }
 
 /**
@@ -1141,12 +1188,16 @@ function toDimensionRow(row: RawDimensionRow): DimensionRowWithRepoKey {
 		eventCount: row.eventCount,
 		// Absent, never null, so `!row.repoKey` reads the same for both shapes downstream.
 		repoKey: row._id.repoKey ?? undefined,
+		repoName: row.repoName ?? undefined,
 	};
 }
 
 /** `DailyCostByDimensionRow` plus the grouping key used only inside this file, never returned. */
 interface DimensionRowWithRepoKey extends DailyCostByDimensionRow {
 	repoKey?: string;
+	/** The repository's main-checkout name, resolved from git at sync time (card #177). Absent for
+	 * events synced before that shipped, and for repositories with no main checkout. */
+	repoName?: string;
 }
 
 /**
@@ -1177,9 +1228,9 @@ function mergeByNormalizedDimension(rows: DimensionRowWithRepoKey[]): DimensionR
 
 /**
  * Folds project rows that share a repository (D20: same normalized git remote, hashed at sync
- * time) into one row per day, labeled with the SHORTEST projectSlug in the group — the main
- * checkout, not a ticket-branch worktree. A project with no repoKey (its recorded cwd wasn't a
- * git repo, or no longer exists) stands alone, keyed by its own slug — never merged by name.
+ * time) into one row per day, labeled by `repoLabelsAcrossRange` — the main checkout, not a
+ * ticket-branch worktree. A project with no repoKey (its recorded cwd wasn't a git repo, or no
+ * longer exists) stands alone, keyed by its own slug — never merged by name.
  *
  * @param rows - rows keyed by (day, raw projectSlug), each carrying its repoKey when resolved
  */
@@ -1206,16 +1257,24 @@ function mergeProjectRowsByRepoKey(rows: DimensionRowWithRepoKey[]): DimensionRo
 }
 
 /**
- * Each repository's label across the WHOLE range: the projectSlug that carried the most of its
- * events anywhere in the window, ties broken by shortest slug and then alphabetically so the choice
- * never depends on the order Mongo returned.
+ * Each repository's label across the WHOLE range, decided in two tiers.
  *
- * Most-events rather than shortest-slug, because a folder that merely CONTAINS repositories has a
- * short name and picks up real spend whenever a turn is attributed to a repository from outside it
- * — enough for `git-repos/personal` to outrank both `personal/claude-usage` and
- * `personal/quant-trading` and take BOTH their names at once. The shortest-slug tie-break keeps
- * D20's original case intact: a main checkout and its worktree that each ran once still resolve to
- * the main checkout.
+ * FIRST, `repoName` — git's own answer for which checkout is the main one (card #177), recorded at
+ * sync time. It outranks any amount of volume: a ticket worktree the operator lives in ran the most
+ * events by far and would otherwise take the repository's name, which is the defect this exists for.
+ * A name-based rule was rejected instead of this one, and not theoretically — `upredict-backend-
+ * worktrees` shares a prefix with 44 real worktrees of `upredict-backend` while being a different
+ * repository entirely.
+ *
+ * SECOND, when no event in the window carried a name (synced before this shipped, or a bare
+ * repository with no checkout to name), the projectSlug that carried the most of its events. Not
+ * shortest-slug, because a folder that merely CONTAINS repositories has a short name and picks up
+ * real spend whenever a turn is attributed to a repository from outside it — enough for
+ * `git-repos/personal` to outrank both `personal/claude-usage` and `personal/quant-trading` and
+ * take BOTH their names at once.
+ *
+ * Either tier breaks ties by shortest then alphabetically, so the choice never depends on the order
+ * Mongo returned.
  *
  * Resolved before any per-day grouping, and that ordering is the point. Choosing within each DAY
  * names a repository after whichever checkout happened to run that day, so one repository splits
@@ -1225,26 +1284,53 @@ function mergeProjectRowsByRepoKey(rows: DimensionRowWithRepoKey[]): DimensionRo
  * @param rows - every row in the window, each carrying its repoKey when one was resolved
  */
 function repoLabelsAcrossRange(rows: DimensionRowWithRepoKey[]): Map<string, string> {
-	// Accumulated across days first: a slug's claim is its whole-window volume, not its best day.
-	const eventsByRepoAndSlug = new Map<string, Map<string, number>>();
+	// Accumulated across days first: a name's claim is its whole-window volume, not its best day.
+	// Two tallies per repository, because git's answer outranks any amount of volume: a checkout
+	// that ran a hundred times still does not get to rename the repository it is a worktree of.
+	const canonicalByRepo = new Map<string, Map<string, number>>();
+	const slugsByRepo = new Map<string, Map<string, number>>();
 
 	for (const row of rows) {
 		if (!row.repoKey) continue;
-		const bySlug = eventsByRepoAndSlug.get(row.repoKey) ?? new Map<string, number>();
-		bySlug.set(row.dimensionValue, (bySlug.get(row.dimensionValue) ?? 0) + row.eventCount);
-		eventsByRepoAndSlug.set(row.repoKey, bySlug);
+		tally(slugsByRepo, row.repoKey, row.dimensionValue, row.eventCount);
+		if (row.repoName) tally(canonicalByRepo, row.repoKey, row.repoName, row.eventCount);
 	}
 
 	const labels = new Map<string, string>();
-	for (const [repoKey, bySlug] of eventsByRepoAndSlug) {
-		const ranked = [...bySlug].sort(
-			([slugA, eventsA], [slugB, eventsB]) =>
-				eventsB - eventsA || slugA.length - slugB.length || (slugA < slugB ? -1 : slugA > slugB ? 1 : 0),
-		);
-		labels.set(repoKey, ranked[0][0]);
+	for (const [repoKey, bySlug] of slugsByRepo) {
+		// Machines can lay the same repository out under different parents, so even git's answer can
+		// disagree across a window; the same ranking settles it rather than result order.
+		labels.set(repoKey, rank(canonicalByRepo.get(repoKey) ?? bySlug));
 	}
 
 	return labels;
+}
+
+/**
+ * Add one candidate name's events to a repository's tally.
+ *
+ * @param tallies - per-repository candidate counts, mutated in place
+ * @param repoKey - the repository being tallied
+ * @param name - the candidate name
+ * @param events - how many events this row contributes
+ */
+function tally(tallies: Map<string, Map<string, number>>, repoKey: string, name: string, events: number): void {
+	const byName = tallies.get(repoKey) ?? new Map<string, number>();
+	byName.set(name, (byName.get(name) ?? 0) + events);
+	tallies.set(repoKey, byName);
+}
+
+/**
+ * The winning name from a tally: most events, then shortest, then alphabetical — fully ordered, so
+ * the same window always produces the same label whatever order Mongo returned.
+ *
+ * @param byName - one repository's candidate names and their event counts
+ */
+function rank(byName: Map<string, number>): string {
+	return [...byName].sort(
+		([nameA, eventsA], [nameB, eventsB]) =>
+			eventsB - eventsA || nameA.length - nameB.length || (nameA < nameB ? -1 : nameA > nameB ? 1 : 0),
+	)[0][0];
 }
 
 /**
@@ -1260,8 +1346,8 @@ function labelFor(row: DimensionRowWithRepoKey, labels: Map<string, string>): st
 }
 
 /**
- * Folds rows into one row per repository per day, labeled with the SHORTEST projectSlug in the
- * group (D20's convention, since repoKey is opaque). Differs from `mergeProjectRowsByRepoKey` in
+ * Folds rows into one row per repository per day, labeled by `repoLabelsAcrossRange` (D20: the
+ * label has to be derived, since repoKey is opaque). Differs from `mergeProjectRowsByRepoKey` in
  * one deliberate way: every row with NO repoKey collapses into a single explicitly-named bucket
  * rather than standing alone. On the Project tab those are separate projects that happen to share
  * a missing field; on this tab "no repository" is the answer itself, and today that is over half
@@ -1294,8 +1380,8 @@ function mergeRepoRows(rows: DimensionRowWithRepoKey[]): DimensionRowWithRepoKey
 	return [...merged.values()].sort((a, b) => a.day.localeCompare(b.day));
 }
 
-/** Strips the internal grouping key before a row leaves this file — never exposed to callers. */
+/** Strips the internal grouping fields before a row leaves this file — never exposed to callers. */
 function dropRepoKey(row: DimensionRowWithRepoKey): DailyCostByDimensionRow {
-	const { repoKey, ...rest } = row;
+	const { repoKey, repoName, ...rest } = row;
 	return rest;
 }

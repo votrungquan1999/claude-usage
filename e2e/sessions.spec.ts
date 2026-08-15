@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
 
+import { MACHINE_IDS } from "./fixtures/corpus";
+
 /**
  * The session list, scoped by a column header unique to it. The page holds several tables and the
  * list sits in a plain card with no landmark role, so this is the narrowest handle that needs no
@@ -65,6 +67,29 @@ test("re-ordering the list sends the operator back to page one", async ({ page }
 	await expect(sessionLinkAt(page, 0)).toHaveAttribute("href", /\/session\/e2e-session-(01|11|21)$/);
 });
 
+test("the list's Machine column shows a short display id, not the 64-char hash (card #170 Step 4)", async ({ page }) => {
+	await page.goto("/");
+
+	// Session 30 (row 0, most expensive) bills to MACHINE_IDS[1] — the "Machine" column is always
+	// the 3rd (`SessionTable`'s own fixed column order: Session, Project, Machine, …).
+	const machineCell = sessionTable(page).getByRole("row").nth(1).getByRole("cell").nth(2);
+	await expect(machineCell).toHaveText(MACHINE_IDS[1].slice(0, 8));
+});
+
+test("the session table's scroll region is keyboard-focusable and names itself for assistive tech (card #170 Step 5, D2)", async ({
+	page,
+}) => {
+	await page.goto("/");
+
+	// The scroll wrapper (`table.tsx`'s own div, not the <table> itself) is what needs to be
+	// reachable — WCAG 2.1.1: a horizontally-scrolling region with no way to reach it by keyboard
+	// is unusable without a pointer.
+	const region = page.getByRole("region", { name: "Session list" });
+	await expect(region).toHaveAttribute("tabindex", "0");
+	await region.focus();
+	await expect(region).toBeFocused();
+});
+
 test("clicking a session opens its own page", async ({ page }) => {
 	await page.goto("/");
 
@@ -75,4 +100,12 @@ test("clicking a session opens its own page", async ({ page }) => {
 	await expect(page.getByRole("heading", { level: 1, name: "Session e2e-session-30" })).toBeVisible();
 	await expect(page.getByRole("heading", { level: 2, name: "Overview" })).toBeVisible();
 	await expect(page.getByRole("heading", { level: 2, name: "Cost by model" })).toBeVisible();
+});
+
+test("the session detail page's Machine field shows a short display id, not the 64-char hash (card #170 Step 4)", async ({
+	page,
+}) => {
+	await page.goto("/session/e2e-session-30");
+
+	await expect(page.getByText(`Machine: ${MACHINE_IDS[1].slice(0, 8)}`, { exact: true })).toBeVisible();
 });

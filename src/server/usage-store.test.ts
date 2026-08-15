@@ -205,6 +205,21 @@ test("a resync that resolved NO repository leaves a recorded repoKey alone, rath
 	expect(stored?.repoKey).toBe("hash-known");
 });
 
+test("a resync that resolved NO canonical repository name leaves a recorded one alone", async () => {
+	// Same asymmetry repoKey has: the machine holding the checkout can resolve the name, one that
+	// has never checked the repository out cannot. A later, less-informed sync must not blank it.
+	await saveUsageEvents(db, [
+		event({ requestId: "req_repo_name", messageId: "msg_repo_name", repoName: "workspace/upredict-backend" }),
+	]);
+	await saveUsageEvents(db, [event({ requestId: "req_repo_name", messageId: "msg_repo_name" })]);
+
+	const stored = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.findOne({ requestId: "req_repo_name", messageId: "msg_repo_name" });
+
+	expect(stored?.repoName).toBe("workspace/upredict-backend");
+});
+
 test("a corrected resync can demote priced back to false", async () => {
 	// priced must live in $set, never $max: BSON orders false < true, so a $max boolean can
 	// only ratchet toward true and a corrected resync could never demote it back down.

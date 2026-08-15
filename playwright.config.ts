@@ -41,6 +41,28 @@ export default defineConfig({
 			name: "chromium",
 			use: { ...devices["Desktop Chrome"], storageState: E2E_STORAGE_STATE },
 			dependencies: ["setup"],
+			// `mobile.spec.ts` is the phone project's own file (D26) and, from card #170 Step 2
+			// onward, asserts phone-width-ONLY layout (e.g. controls stacking below `sm`) — true at
+			// 390px, false at this project's desktop viewport. Without this, `chromium`'s default
+			// testMatch would pick the file up too and fail on a viewport-dependent assertion that
+			// was never meant to run here.
+			testIgnore: /mobile\.spec\.ts/,
+		},
+		{
+			// Phone-width coverage (card #170 D8): Chromium at 390×844 with touch enabled, not a
+			// WebKit device preset — see D8 for why (no new browser binary, layout math is
+			// engine-independent, hasTouch is what tap() actually needs). Scoped to its own spec
+			// file via testMatch (D26): unscoped, this would run the whole existing suite at phone
+			// width before the mobile layout fixes later in the plan land.
+			name: "mobile",
+			testMatch: /mobile\.spec\.ts/,
+			use: {
+				...devices["Desktop Chrome"],
+				viewport: { width: 390, height: 844 },
+				hasTouch: true,
+				storageState: E2E_STORAGE_STATE,
+			},
+			dependencies: ["setup"],
 		},
 	],
 

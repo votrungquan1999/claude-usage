@@ -6,10 +6,13 @@ import { ensureUsageIndexes, recordMachineSync, saveUsageEvents, type UsageEvent
 
 const REQUIRED_STRING_FIELDS = ["requestId", "messageId", "sessionId", "projectSlug", "model"] as const;
 // `sessionTitle` is the one CONTENT-derived field this API accepts — Claude Code's own name for
-// the session, admitted deliberately so the dashboard's session list is readable. Everything else
-// here is an id. Raw prompt text (`lastPrompt`) lives in the same transcripts and must never join
-// this list; the allowlist is what keeps that decision explicit rather than incidental.
-const OPTIONAL_STRING_FIELDS = ["repoKey", "accountUuid", "orgUuid", "sessionTitle"] as const;
+// the session, admitted deliberately so the dashboard's session list is readable. `repoName` is a
+// path fragment, of the same two-segment shape `projectSlug` has carried since D5 — a wider name
+// would carry employer directory names off the machine, which is what that shape exists to prevent.
+// Everything else here is an id. Raw prompt text (`lastPrompt`) lives in the same transcripts and
+// must never join this list; the allowlist is what keeps that decision explicit rather than
+// incidental.
+const OPTIONAL_STRING_FIELDS = ["repoKey", "repoName", "accountUuid", "orgUuid", "sessionTitle"] as const;
 const REQUIRED_NUMBER_FIELDS = [
 	"inputTokens",
 	"cacheReadTokens",
@@ -120,6 +123,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 		// Present only when the mapper actually resolved a repository (D20) or attributed an
 		// account (D7) — never guessed.
 		if (source.repoKey !== undefined) document.repoKey = source.repoKey;
+		// The repository's main-checkout name (card #177) — a path fragment of the same two-segment
+		// shape projectSlug already carries, not conversation content.
+		if (source.repoName !== undefined) document.repoName = source.repoName;
 		if (source.accountUuid !== undefined) document.accountUuid = source.accountUuid;
 		if (source.orgUuid !== undefined) document.orgUuid = source.orgUuid;
 		// Absent when the transcript carried no title, or when a tail read did not reach the
