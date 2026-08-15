@@ -28,6 +28,58 @@ function initGitRepo(remoteUrl) {
 	return repoDir;
 }
 
+/** A repo plus a linked worktree of it. The commit exists because `git worktree add` needs a HEAD. */
+function initGitRepoWithWorktree(remoteUrl, worktreeName) {
+	const repoDir = initGitRepo(remoteUrl);
+	const identity = ["-c", "user.email=test@example.com", "-c", "user.name=test"];
+	execFileSync("git", [...identity, "commit", "-q", "--allow-empty", "-m", "init"], { cwd: repoDir });
+	const worktreeDir = `${repoDir}-${worktreeName}`;
+	execFileSync("git", ["worktree", "add", "-q", "-b", worktreeName, worktreeDir], { cwd: repoDir });
+	return { repoDir, worktreeDir };
+}
+
+test("a worktree resolves to its main checkout's root, while its own top level stays the worktree", () => {
+	// A ticket-branch worktree shares its main checkout's remote, so the two already group under one
+	// repoKey. What the group cannot do is name itself: the busiest checkout wins, and that is
+	// routinely the worktree. The main checkout is the answer, and only git knows which one it is.
+	const { repoDir, worktreeDir } = initGitRepoWithWorktree("git@github.com:org/worktreed.git", "ticket-123");
+
+	const resolved = resolveRepoAt(worktreeDir);
+
+	expect(resolved?.root).toBe(realpathSync(worktreeDir));
+	expect(resolved?.mainRoot).toBe(realpathSync(repoDir));
+});
+
+test("a worktree of a bare repository resolves a key but no main checkout to name it after", () => {
+	// A bare repo has no working tree, so there is no checkout whose folder name could stand for
+	// the repository. Guessing one from the bare directory's own name is exactly the name-based
+	// inference this whole approach exists to avoid — the repository stays keyed but unnamed.
+	const seedDir = initGitRepo("git@github.com:org/seed.git");
+	const identity = ["-c", "user.email=test@example.com", "-c", "user.name=test"];
+	execFileSync("git", [...identity, "commit", "-q", "--allow-empty", "-m", "init"], { cwd: seedDir });
+	const bareDir = `${seedDir}-bare.git`;
+	execFileSync("git", ["clone", "-q", "--bare", seedDir, bareDir]);
+	execFileSync("git", ["remote", "set-url", "origin", "git@github.com:org/bare.git"], { cwd: bareDir });
+	const worktreeDir = `${bareDir}-ticket-9`;
+	execFileSync("git", ["worktree", "add", "-q", "-b", "ticket-9", worktreeDir], { cwd: bareDir });
+
+	const resolved = resolveRepoAt(worktreeDir);
+
+	expect(resolved?.root, "the worktree itself still resolves as a repository").toBe(realpathSync(worktreeDir));
+	expect(resolved?.mainRoot).toBe(undefined);
+});
+
+test("a main checkout is its own main checkout", () => {
+	// Every repository must answer this, not only the ones with worktrees — a label that is present
+	// for worktrees and absent for ordinary checkouts would leave most repositories on the old
+	// most-events rule, which is the behaviour being replaced.
+	const repoDir = initGitRepo("git@github.com:org/plain.git");
+
+	const resolved = resolveRepoAt(repoDir);
+
+	expect(resolved?.mainRoot).toBe(realpathSync(repoDir));
+});
+
 test("the SSH and HTTPS forms of the same remote resolve to the same repoKey", () => {
 	// git@github.com:org/repo.git and https://github.com/org/repo.git are the same repository —
 	// without normalizing before hashing, two machines recording either form would never group,

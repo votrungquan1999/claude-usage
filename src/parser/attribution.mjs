@@ -10,6 +10,9 @@ import { resolveProjectRepo, resolveRepoAt } from "./repo.mjs";
  * @property {string} projectSlug - `<parent>/<name>` of the repository root, or the project
  *   directory's own slug when no repository could be resolved
  * @property {string} [repoKey] - absent, not null, when no repository could be resolved
+ * @property {string} [repoName] - `<parent>/<name>` of the repository's MAIN checkout — what the
+ *   dashboard names the repository, so a busy worktree cannot take that name. Absent when no
+ *   repository resolved, or when it has no main checkout (a bare repository).
  */
 
 /**
@@ -23,7 +26,13 @@ export function resolveProjectAttribution(projectDir) {
 	// two independent directory scans answer about different transcripts, which is how a parent
 	// folder's name ended up carrying a real repository's key.
 	const repo = resolveProjectRepo(projectDir);
-	if (repo) return { projectSlug: lastTwoSegments(repo.root), repoKey: repo.key };
+	if (repo) {
+		return {
+			projectSlug: lastTwoSegments(repo.root),
+			repoKey: repo.key,
+			...(repo.mainRoot && { repoName: lastTwoSegments(repo.mainRoot) }),
+		};
+	}
 
 	const projectSlug = resolveProjectSlug(projectDir);
 	return projectSlug === null ? null : { projectSlug };
@@ -66,7 +75,11 @@ export function attributeTurns(turns, fallback, lookup = resolveRepoAt) {
 		if (!resolved) return fallback;
 
 		carried = resolved;
-		return { projectSlug: lastTwoSegments(resolved.root), repoKey: resolved.key };
+		return {
+			projectSlug: lastTwoSegments(resolved.root),
+			repoKey: resolved.key,
+			...(resolved.mainRoot && { repoName: lastTwoSegments(resolved.mainRoot) }),
+		};
 	});
 }
 

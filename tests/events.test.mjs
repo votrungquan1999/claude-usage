@@ -28,6 +28,39 @@ test("a session title given to the mapper rides on the event; without one the fi
 	expect(Object.hasOwn(unnamed, "sessionTitle"), "an absent title must not become a null field").toBe(false);
 });
 
+test("a canonical repository name rides on the event; without one the field is absent entirely", () => {
+	const [turn] = dedupeAssistantTurns([
+		{
+			type: "assistant",
+			requestId: "req_repo_name",
+			messageId: "msg_repo_name",
+			sessionId: "session-repo-name",
+			isSidechain: false,
+			model: "claude-opus-5",
+			timestamp: "2026-08-01T10:00:00.000Z",
+			message: { usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } },
+		},
+	]);
+	const context = {
+		projectSlug: "workspace/upredict-backend-ubet-4179",
+		machineId: "machine-a",
+		repoKey: "hash-upredict",
+		accountLedger: [],
+	};
+
+	const named = mapTurnToEvent(turn, { ...context, repoName: "workspace/upredict-backend" });
+	expect(named.repoName).toBe("workspace/upredict-backend");
+	expect(named.projectSlug, "the checkout that ran is still recorded as itself").toBe(
+		"workspace/upredict-backend-ubet-4179",
+	);
+
+	// Absent, NOT present-and-undefined — same reason repoKey and sessionTitle are: the store
+	// spreads unlisted fields into $set, so a machine that cannot resolve the name would erase
+	// one a machine that could had already recorded.
+	const unnamed = mapTurnToEvent(turn, context);
+	expect(Object.hasOwn(unnamed, "repoName"), "an unresolved name must not become a null field").toBe(false);
+});
+
 test("the session title is the LAST ai-title record, since Claude Code rewrites it as the session develops", () => {
 	const title = resolveSessionTitle([
 		{ type: "assistant", requestId: "req_1" },
@@ -218,8 +251,9 @@ test("emits exactly the allowed 17-key set, plus accountUuid/orgUuid, when the s
 		projectSlug: "personal/claude-usage",
 		machineId: "machine-abc",
 		repoKey: "9f8e7d6c5b4a",
-		// Supplied so the allowlist below actually exercises the widened field. Without it the
-		// title is absent and this test would keep passing while saying nothing about it.
+		// Both supplied for the same reason: without them the fields are absent and this test would
+		// keep passing while saying nothing about the widened allowlist.
+		repoName: "personal/claude-usage",
 		sessionTitle: "Migrate the test runner",
 		accountLedger: {
 			sess_attributed: [{ from: "2026-07-01T00:00:00.000Z", accountUuid: "account-work", orgUuid: "org-work" }],
@@ -233,6 +267,8 @@ test("emits exactly the allowed 17-key set, plus accountUuid/orgUuid, when the s
 		"projectSlug",
 		"machineId",
 		"repoKey",
+		// A path fragment, not content: the same two-segment shape projectSlug already carries.
+		"repoName",
 		"accountUuid",
 		"orgUuid",
 		"model",

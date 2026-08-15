@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { streamRecords } from "./read.mjs";
 
@@ -51,6 +51,9 @@ export function resolveProjectRepo(projectDir) {
  * @typedef {object} ResolvedRepo
  * @property {string} root - absolute path to the repository (or worktree) top level
  * @property {string} key - the opaque remote hash stored as `repoKey`
+ * @property {string} [mainRoot] - absolute path to the MAIN checkout's top level, which is what
+ *   names the repository; equal to `root` for a main checkout. Absent when there is no main
+ *   checkout to point at (a bare repository's worktrees) — never guessed, like `key` itself.
  */
 
 /**
@@ -93,7 +96,27 @@ function findRepoAt(dir) {
 	const remote = runGit(root, ["remote", "get-url", "origin"]);
 	if (!remote) return undefined;
 
-	return { root, key: hashRemote(normalizeGitRemote(remote)) };
+	const mainRoot = mainRootOf(root);
+	return { root, key: hashRemote(normalizeGitRemote(remote)), ...(mainRoot && { mainRoot }) };
+}
+
+/**
+ * The main checkout's top level, asked of git rather than inferred from any name.
+ *
+ * @param {string} root - a repository or worktree top level
+ * @returns {string|undefined} the main checkout's path, or undefined when there is none to name
+ */
+function mainRootOf(root) {
+	const commonDir = runGit(root, ["rev-parse", "--git-common-dir"]);
+	if (!commonDir) return undefined;
+
+	// git answers in two shapes — a main checkout gets a path relative to the cwd asked from
+	// (`.git`, or `../../.git` from a subdirectory), a worktree gets the main checkout's absolute
+	// one. `resolve` collapses both correctly; branching on which shape came back does not.
+	const common = resolve(root, commonDir);
+	// A checkout's git directory always sits INSIDE it. Anything else is a bare repository, which
+	// has no working tree to name — left absent rather than guessed from the bare folder's name.
+	return common.endsWith("/.git") ? dirname(common) : undefined;
 }
 
 /** @param {string} cwd @param {string[]} args */

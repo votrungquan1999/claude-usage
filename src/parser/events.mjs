@@ -17,6 +17,9 @@ import { isPricedModel, turnCost } from "./pricing.mjs";
  * @property {string} [repoKey] - opaque hash of the normalized git remote (D20), resolved per
  *   TURN; absent, not null, when nothing about the turn or its project directory resolved a
  *   repository — never fabricated as a name-based guess
+ * @property {string} [repoName] - `<parent>/<name>` of the repository's MAIN checkout, so a busy
+ *   worktree cannot take the repository's name (card #177). Same two-segment shape as
+ *   `projectSlug`, and absent for the same reasons `repoKey` is
  * @property {string} [accountUuid] - absent, not null, when the session predates the ledger (D7)
  * @property {string} [orgUuid]
  * @property {string} model         - raw, not normalized — grouping happens at query time
@@ -44,6 +47,8 @@ import { isPricedModel, turnCost } from "./pricing.mjs";
  * @param {string} context.machineId
  * @param {string} [context.repoKey] - this TURN's repository (D20); absent, not null, when neither
  *   the turn nor the project directory resolved one — never fabricated as a name-based guess
+ * @param {string} [context.repoName] - that repository's MAIN checkout name (card #177); absent
+ *   when no repository resolved, or when it has no main checkout to be named after
  * @param {Record<string, import("./account-ledger.mjs").AccountEntry[]>} context.accountLedger
  * @returns {MappedUsageEvent | null} null when the turn is a placeholder that must never be
  *   stored as spend — callers map over an array of turns and filter out the nulls
@@ -73,7 +78,7 @@ export function resolveSessionTitle(records) {
 	return title;
 }
 
-export function mapTurnToEvent(turn, { projectSlug, machineId, repoKey, accountLedger, sessionTitle }) {
+export function mapTurnToEvent(turn, { projectSlug, machineId, repoKey, repoName, accountLedger, sessionTitle }) {
 	// Claude Code writes zero-usage "<synthetic>" turns for errors/interruptions; the
 	// requestId check is a defensive invariant guard (vacuous on today's data — every
 	// non-synthetic record already carries a requestId — but cheap to keep for a future
@@ -91,6 +96,7 @@ export function mapTurnToEvent(turn, { projectSlug, machineId, repoKey, accountL
 		projectSlug,
 		machineId,
 		...(repoKey !== undefined && { repoKey }),
+		...(repoName !== undefined && { repoName }),
 		// Spread in only when known, like repoKey: the store puts unlisted fields in $set, so
 		// sending it as undefined would erase a title an earlier sync already recorded.
 		...(sessionTitle !== undefined && { sessionTitle }),
