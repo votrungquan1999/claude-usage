@@ -1,5 +1,5 @@
 import { dedupeAssistantTurns } from "./parser/dedupe.mjs";
-import { CACHE_READ, inputPrice, isPricedModel, turnCost } from "./parser/pricing.mjs";
+import { cacheReadPrice, isPricedModel, turnCost } from "./parser/pricing.mjs";
 
 /** Late enough to be actionable, early enough to still finish a thought. */
 const COMPACTION_THRESHOLD = 0.8;
@@ -45,7 +45,7 @@ export function buildStatusState(payload, records, subagentCost = 0, sync = {}) 
 		contextWindow: window.context_window_size ?? 0,
 		turnCost: last ? turnCost(last) : 0,
 		subagentCost,
-		carryCost: (contextTokens * inputPrice(model, last?.timestamp ?? "") * CACHE_READ) / 1_000_000,
+		carryCost: (contextTokens * cacheReadPrice(model, last?.timestamp ?? "")) / 1_000_000,
 		priced: isPricedModel(model),
 		warnings,
 	};

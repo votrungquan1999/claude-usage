@@ -1,4 +1,4 @@
-import { CACHE_READ, inputPrice, turnCost } from "./pricing.mjs";
+import { cacheReadPrice, turnCost } from "./pricing.mjs";
 
 /**
  * What the whole session has cost so far, in USD.
@@ -20,7 +20,7 @@ export function carryCost(turns) {
 	const last = lastRealTurn(turns);
 	if (!last) return 0;
 
-	return (contextSize(turns) * inputPrice(last.model, last.timestamp) * CACHE_READ) / 1_000_000;
+	return (contextSize(turns) * cacheReadPrice(last.model, last.timestamp)) / 1_000_000;
 }
 
 /**

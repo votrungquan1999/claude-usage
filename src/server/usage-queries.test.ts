@@ -607,18 +607,18 @@ test("a session's turns show carry and new work split from each turn's own cost 
 	expect(turns[0]).toEqual(expect.objectContaining({ carryUsd: 16.75, newUsd: 30 }));
 });
 
-test("two turns straddling claude-sonnet-5's price change are each split at their own turn's rate, never a session-average one (card #161 Step 6)", async () => {
+test("two turns on different models are each split at their own turn's rate, never a session-average one (card #161 Step 6)", async () => {
 	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
 	await saveUsageEvents(db, [
 		event({
 			requestId: "req_turn_before_reprice",
 			messageId: "msg_turn_before_reprice",
 			sessionId: "session-turns-reprice",
-			model: "claude-sonnet-5",
+			model: "claude-opus-5",
 			// Well clear of the D6a boundary test's own [2026-08-31T17:00Z, 2026-09-01T16:59Z]
 			// range above — that query is whole-collection-scoped (no sessionId filter), so an
 			// event here landing inside it would inflate that test's totals.
-			timestamp: new Date("2026-08-25T10:00:00.000Z"), // $2/MTok intro rate
+			timestamp: new Date("2026-08-25T10:00:00.000Z"), // $5/MTok, reads at 0.1x
 			...tokens,
 			costUsd: 1,
 		}),
@@ -626,8 +626,8 @@ test("two turns straddling claude-sonnet-5's price change are each split at thei
 			requestId: "req_turn_after_reprice",
 			messageId: "msg_turn_after_reprice",
 			sessionId: "session-turns-reprice",
-			model: "claude-sonnet-5",
-			timestamp: new Date("2026-09-10T10:00:00.000Z"), // $3/MTok list rate
+			model: "claude-opus-5-5", // switched mid-session
+			timestamp: new Date("2026-09-10T10:00:00.000Z"), // $4/MTok, reads at 0.05x
 			...tokens,
 			costUsd: 1,
 		}),
@@ -635,9 +635,9 @@ test("two turns straddling claude-sonnet-5's price change are each split at thei
 
 	const turns = await getSessionTurns(db, "session-turns-reprice");
 
-	// $0.20 carry before the reprice, $0.30 after — a session-average rate would give both turns
+	// $0.50 carry on Opus 5, $0.20 on Opus 5.5 — a session-average rate would give both turns
 	// the same figure.
-	expect(turns.map((turn) => turn.carryUsd)).toEqual([0.2, 0.3]);
+	expect(turns.map((turn) => turn.carryUsd)).toEqual([0.5, 0.2]);
 });
 
 test("an unpriced turn contributes zero to both carry and new, matching the $cond: [priced] convention (card #161 Step 6)", async () => {
@@ -1280,10 +1280,10 @@ test("dailyEfficiencyByModel splits a day's cache savings by model, so the mix a
 	expect(rows.find((row) => row.model === "claude-haiku-4-5")?.netSavedUsd).toBeCloseTo(0.9, 6);
 });
 
-test("a local day straddling a price change prices each side at the rate it was actually billed at (D6a)", async () => {
-	// claude-sonnet-5 moves from $2/MTok to $3/MTok at 2026-09-01T00:00Z. The local day
-	// 2026-09-01 in Asia/Ho_Chi_Minh runs 2026-08-31T17:00Z -> 2026-09-01T16:59Z, so it spans that
-	// boundary. Both events below land on the SAME local day and on DIFFERENT sides of the change.
+test("a local day straddling 2026-09-01 keeps Sonnet 5 at $2/MTok on both sides, since its scheduled rise was cancelled (D6a)", async () => {
+	// The local day 2026-09-01 in Asia/Ho_Chi_Minh runs 2026-08-31T17:00Z -> 2026-09-01T16:59Z, so
+	// it spans the date the cancelled rise would have started. Both events land on that SAME local
+	// day, on either side of it. The price-period rule itself is pinned by periodAt's own test.
 	const range = { from: new Date("2026-08-31T17:00:00.000Z"), to: new Date("2026-09-01T16:59:59.999Z") };
 	await saveUsageEvents(db, [
 		event({
@@ -1319,10 +1319,9 @@ test("a local day straddling a price change prices each side at the rate it was 
 	const rows = await dailyEfficiencyByModel(db, range);
 	const sonnet = rows.filter((row) => row.day === "2026-09-01" && row.model === "claude-sonnet-5");
 
-	// One merged row: $1.80 at the old rate plus $2.70 at the new one. Pricing the whole local day
-	// at either single rate gives $3.60 or $5.40 — both wrong, and both silently so.
+	// One merged row: $1.80 saved on each side, at $2/MTok.
 	expect(sonnet).toHaveLength(1);
-	expect(sonnet[0].grossSavedUsd).toBeCloseTo(4.5, 6);
+	expect(sonnet[0].grossSavedUsd).toBeCloseTo(3.6, 6);
 	expect(sonnet[0].totalEventCount).toBe(2);
 });
 

@@ -71,3 +71,30 @@ test("counts agents launched inside a workflow, nested two levels under subagent
 
 	expect(cost.toFixed(4)).toBe("0.0250");
 });
+
+test("counts a long subagent's early turns when asked for the whole session, not just its last 256 KB", () => {
+	const dir = mkdtempSync(join(tmpdir(), "claude-usage-"));
+	const transcript = join(dir, "session.jsonl");
+	writeFileSync(transcript, "");
+
+	// A 300 KB tool result between two priced turns pushes the first one out of any 256 KB tail.
+	const subagents = join(dir, "session", "subagents");
+	mkdirSync(subagents, { recursive: true });
+	const padding = { type: "user", timestamp: "2026-08-01T10:00:00.000Z", message: { content: "x".repeat(300_000) } };
+	writeFileSync(
+		join(subagents, "agent-long.jsonl"),
+		`${[
+			agentTurn({ id: 1, timestamp: "2026-08-01T09:00:00.000Z", output: 4_000 }),
+			padding,
+			agentTurn({ id: 2, timestamp: "2026-08-01T11:00:00.000Z", output: 1_000 }),
+		]
+			.map((r) => JSON.stringify(r))
+			.join("\n")}\n`,
+	);
+
+	// Both turns: 5000 output tokens at $25/MTok.
+	const cost = subagentCostSince(transcript, "1970-01-01T00:00:00.000Z");
+
+	expect(cost.toFixed(4)).toBe("0.1250");
+});
+

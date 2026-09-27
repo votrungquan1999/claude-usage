@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { cacheSavings, isPricedModel, turnCarrySplit, turnCost } from "../src/parser/pricing.mjs";
+import { cacheSavings, isPricedModel, periodAt, turnCarrySplit, turnCost } from "../src/parser/pricing.mjs";
 
 test("reports whether a model has a known price, so $0 is never mistaken for cheap", () => {
 	expect(isPricedModel("claude-opus-5[1m]")).toBe(true);
@@ -30,6 +30,45 @@ test("prices each cache tier at its own multiplier", () => {
 	expect(turnCost(turn)).toBe(46.75);
 });
 
+/** One MTok in every bucket, so a wrong rate on any one of them shifts the total. */
+function mtokTurn(model, timestamp = "2026-09-27T10:00:00.000Z") {
+	return {
+		requestId: "req",
+		messageId: "msg",
+		model,
+		timestamp,
+		usage: {
+			input_tokens: 1_000_000,
+			cache_read_input_tokens: 1_000_000,
+			cache_creation_input_tokens: 2_000_000,
+			cache_creation: { ephemeral_5m_input_tokens: 1_000_000, ephemeral_1h_input_tokens: 1_000_000 },
+			output_tokens: 1_000_000,
+		},
+	};
+}
+
+test("prices Opus 5.5 at $4/$20 with cache reads at 0.05x, not the usual 0.1x", () => {
+	// $4 input + $0.20 read (0.05x) + $5 5m (1.25x) + $8 1h (2.0x) + $20 output
+	expect(turnCost(mtokTurn("claude-opus-5-5[1m]"))).toBeCloseTo(37.2, 10);
+});
+
+test("prices Fable 5.1 at $10/$50 with cache reads at 0.025x", () => {
+	// $10 input + $0.25 read (0.025x) + $12.50 5m (1.25x) + $20 1h (2.0x) + $50 output
+	expect(turnCost(mtokTurn("claude-fable-5-1"))).toBeCloseTo(92.75, 10);
+});
+
+test("a price change applies from its date on, so past usage keeps the price it was billed at", () => {
+	// No model in the table has a dated change today; this pins the rule every lookup relies on.
+	const periods = [
+		{ from: "", input: 1 },
+		{ from: "2026-09-01", input: 2 },
+	];
+
+	expect(periodAt(periods, "2026-08-31T23:59:59.999Z")?.input).toBe(1);
+	expect(periodAt(periods, "2026-09-01T00:00:00.000Z")?.input).toBe(2);
+	expect(periodAt(periods, "2027-01-01T00:00:00.000Z")?.input).toBe(2);
+});
+
 test("prices a model string carrying a [1m] suffix", () => {
 	// The live session reports `claude-opus-5[1m]`; an unstripped lookup silently costs $0.
 	const turn = {
@@ -48,8 +87,8 @@ test("prices a model string carrying a [1m] suffix", () => {
 	expect(turnCost(turn)).toBe(30); // $5 input + $25 output
 });
 
-test("uses the price effective at the message's timestamp", () => {
-	// Sonnet 5 intro pricing ends 2026-08-31; pricing history must not be repriced by the clock.
+test("keeps Sonnet 5 at $2/$10 after 2026-09-01, since its announced rise to $3/$15 was cancelled", () => {
+	// Launch pricing was billed as introductory through 2026-08-31, then made the standard price.
 	const sonnetTurn = (timestamp) => ({
 		requestId: "req",
 		messageId: "msg",
@@ -63,8 +102,8 @@ test("uses the price effective at the message's timestamp", () => {
 		},
 	});
 
-	expect(turnCost(sonnetTurn("2026-08-31T23:00:00.000Z")), "intro $2/$10").toBe(12);
-	expect(turnCost(sonnetTurn("2026-09-01T00:00:00.000Z")), "list $3/$15").toBe(18);
+	expect(turnCost(sonnetTurn("2026-08-31T23:00:00.000Z")), "before").toBe(12);
+	expect(turnCost(sonnetTurn("2026-09-01T00:00:00.000Z")), "after").toBe(12);
 });
 
 test("cache savings separate what reads saved from what the writes cost extra", () => {
@@ -106,13 +145,11 @@ test("an unknown model reports zero saved, which isPricedModel is what distingui
 	expect(isPricedModel("claude-something-unreleased")).toBe(false);
 });
 
-test("cache savings follow the price in effect at the time, not today's price", () => {
-	// claude-sonnet-5 moves from $2/MTok to $3/MTok on 2026-09-01. The same tokens must price
-	// differently either side of that instant, or a local day spanning it is mispriced by 50%.
+test("cache savings keep Sonnet 5 at $2/MTok after 2026-09-01, since its scheduled rise was cancelled", () => {
 	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
 
 	expect(cacheSavings("claude-sonnet-5", "2026-08-31T18:00:00.000Z", tokens).grossUsd).toBe(1.8);
-	expect(cacheSavings("claude-sonnet-5", "2026-09-01T10:00:00.000Z", tokens).grossUsd).toBe(2.7);
+	expect(cacheSavings("claude-sonnet-5", "2026-09-01T10:00:00.000Z", tokens).grossUsd).toBe(1.8);
 });
 
 test("splits a turn's cost into carry (cache reads/writes at D3's multipliers) and new (the residual), summing back to the exact cost with no epsilon (card #161 D3/D11)", () => {
@@ -136,13 +173,12 @@ test("new is clamped at zero, never negative, when carry alone would exceed the 
 	expect(split.newUsd).toBe(0);
 });
 
-test("carry is priced at the turn's own timestamp, not today's rate (card #161 — claude-sonnet-5 reprices 2026-09-01, never sum-then-price)", () => {
+test("carry keeps Sonnet 5 at $2/MTok after 2026-09-01, since its scheduled rise was cancelled", () => {
 	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
 
-	// $2/MTok intro rate: 1_000_000 * 0.1 * 2 / 1e6 = $0.20 carry.
+	// $2/MTok either side: 1_000_000 * 0.1 * 2 / 1e6 = $0.20 carry.
 	expect(turnCarrySplit("claude-sonnet-5", "2026-08-31T23:00:00.000Z", tokens, 1).carryUsd).toBe(0.2);
-	// $3/MTok list rate: 1_000_000 * 0.1 * 3 / 1e6 = $0.30 carry.
-	expect(turnCarrySplit("claude-sonnet-5", "2026-09-01T00:00:00.000Z", tokens, 1).carryUsd).toBe(0.3);
+	expect(turnCarrySplit("claude-sonnet-5", "2026-09-01T00:00:00.000Z", tokens, 1).carryUsd).toBe(0.2);
 });
 
 test("an unknown model contributes zero to both carry and new, even if a stale costUsd was passed in (card #161 — matches turnCost/cacheSavings' own unpriced guard)", () => {
@@ -153,4 +189,18 @@ test("an unknown model contributes zero to both carry and new, even if a stale c
 	const split = turnCarrySplit("claude-something-unreleased", "2026-08-01T10:00:00.000Z", tokens, 9.99);
 
 	expect(split).toStrictEqual({ carryUsd: 0, newUsd: 0 });
+});
+
+test("carry prices Opus 5.5 cache reads at its own 0.05x, not the usual 0.1x", () => {
+	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
+
+	// 1_000_000 * 0.05 * $4 / 1e6 = $0.20
+	expect(turnCarrySplit("claude-opus-5-5", "2026-09-27T10:00:00.000Z", tokens, 1).carryUsd).toBeCloseTo(0.2, 10);
+});
+
+test("cache savings credit Opus 5.5 reads with the 95% its 0.05x rate saves", () => {
+	const tokens = { cacheReadTokens: 1_000_000, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
+
+	// 1_000_000 * $4 * (1 - 0.05) / 1e6 = $3.80
+	expect(cacheSavings("claude-opus-5-5", "2026-09-27T10:00:00.000Z", tokens).grossUsd).toBeCloseTo(3.8, 10);
 });

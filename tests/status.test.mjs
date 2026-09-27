@@ -140,3 +140,28 @@ test("takes context from the statusLine payload and turn cost from the transcrip
 	expect(state.carryCost.toFixed(4)).toBe("0.2192"); // 438411 x $5 x 0.1
 	expect(state.priced).toBe(true);
 });
+
+test("carry cost on the status line uses the model's own cache-read rate: Opus 5.5 re-reads at 0.05x", () => {
+	const payload = {
+		model: { id: "claude-opus-5-5[1m]" },
+		context_window: { total_input_tokens: 438_411, context_window_size: 1_000_000 },
+	};
+	const records = [
+		{
+			type: "assistant",
+			requestId: "req_a",
+			timestamp: "2026-09-27T10:00:00.000Z",
+			message: {
+				id: "msg_1",
+				model: "claude-opus-5-5[1m]",
+				usage: { input_tokens: 0, cache_read_input_tokens: 400_000, cache_creation_input_tokens: 0, output_tokens: 1_000 },
+			},
+		},
+	];
+
+	const state = buildStatusState(payload, records);
+
+	expect(state.carryCost.toFixed(4)).toBe("0.0877"); // 438411 x $4 x 0.05
+	expect(state.priced).toBe(true);
+});
+

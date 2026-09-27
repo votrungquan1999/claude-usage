@@ -53,6 +53,13 @@ test("carry cost is what the next turn re-reads before you type anything", () =>
 	expect(carryCost(turns).toFixed(2)).toBe("0.50");
 });
 
+test("carry cost uses the model's own cache-read rate: Opus 5.5 re-reads at 0.05x", () => {
+	// 1M tokens of context at 0.05x the $4 input price.
+	const turns = [turn({ cacheRead: 1_000_000, model: "claude-opus-5-5[1m]" })];
+
+	expect(carryCost(turns).toFixed(2)).toBe("0.20");
+});
+
 test("context size and carry cost still reflect the last real turn after a trailing API-error placeholder", () => {
 	// Claude Code appends an all-zero-usage "<synthetic>" turn on an API error; it must not be
 	// read as "the last turn" or the status line zeroes out right when it matters most.
