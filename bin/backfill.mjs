@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { attributeTurns, resolveProjectAttribution } from "../src/parser/attribution.mjs";
 import { dedupeAssistantTurns } from "../src/parser/dedupe.mjs";
@@ -182,7 +183,8 @@ function readMachineId(home) {
 }
 
 // CLI entry — run directly to bring every session already on the machine into the store.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// argv[1] is realpath'd because Node resolves the ~/.claude/claude-usage symlink for the module but not for argv.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
 	const projectsRoot = join(homedir(), ".claude", "projects");
 	runBackfill({ projectsRoot })
 		.then((summary) => {

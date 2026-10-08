@@ -1,5 +1,15 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -440,6 +450,7 @@ function releaseLock(lockPath) {
 }
 
 // CLI entry — invoked as a detached child by hooks/user-prompt-submit.mjs.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// argv[1] is realpath'd because Node resolves the ~/.claude/claude-usage symlink for the module but not for argv.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
 	syncTail({ transcriptPath: process.argv[2] }).then(() => process.exit(0));
 }

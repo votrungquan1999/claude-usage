@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -596,6 +596,22 @@ test("the CLI itself exits non-zero and names the missing vars when run unconfig
 	const output = result.stdout + result.stderr;
 	expect(output).toMatch(/CLAUDE_USAGE_API_URL/);
 	expect(output).toMatch(/CLAUDE_USAGE_SECRET/);
+});
+
+test("the CLI still runs when launched through the installer's ~/.claude/claude-usage symlink", () => {
+	const home = fakeHome();
+	// The installed layout: ~/.claude/claude-usage links to the checkout, and that link path is what gets typed.
+	const linkPath = join(home, ".claude", "claude-usage");
+	symlinkSync(join(import.meta.dirname, ".."), linkPath);
+
+	// Same forced-empty config as the test above, so the run can never reach the real API.
+	const result = spawnSync(process.execPath, [join(linkPath, "bin", "backfill.mjs")], {
+		env: { ...process.env, HOME: home, CLAUDE_USAGE_API_URL: "", CLAUDE_USAGE_SECRET: "" },
+		encoding: "utf8",
+	});
+
+	expect(result.status, "a silent exit 0 means the CLI entry never ran").toBe(1);
+	expect(result.stdout + result.stderr).toMatch(/CLAUDE_USAGE_API_URL/);
 });
 
 test("a failed upload for one file doesn't stop the run — later files still get processed and the failure is reported", async () => {

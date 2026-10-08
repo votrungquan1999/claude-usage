@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -454,6 +454,40 @@ test("the hook exits well before a slow upload finishes, and the upload still co
 			received[0].receivedAt,
 			"upload was recorded strictly after the hook process had already exited",
 		).toBeGreaterThanOrEqual(start + hookDuration);
+	} finally {
+		server.close();
+	}
+});
+
+test("bin/sync.mjs still uploads when launched through the installer's ~/.claude/claude-usage symlink", async () => {
+	const home = fakeHome({ machineId: "machine-abc" });
+	const transcript = writeTranscript(join(home, ".claude", "projects", "-Users-me-project"), "session-link.jsonl", [
+		assistantRecord({
+			requestId: "req_link",
+			messageId: "msg_link",
+			sessionId: "session-link",
+			timestamp: "2026-08-01T10:00:00.000Z",
+			cwd: "/Users/me/project",
+			prose: "hi",
+		}),
+	]);
+	// The installed layout: ~/.claude/claude-usage links to the checkout, and that link path is what gets typed.
+	const linkPath = join(home, ".claude", "claude-usage");
+	symlinkSync(join(import.meta.dirname, ".."), linkPath);
+
+	const { server, url, received } = await startFakeServer();
+	try {
+		// spawn, not spawnSync: the fake server lives in this process's event loop.
+		await new Promise((resolve, reject) => {
+			const child = spawn(process.execPath, [join(linkPath, "bin", "sync.mjs"), transcript], {
+				env: { ...process.env, HOME: home, CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
+				stdio: "ignore",
+			});
+			child.on("error", reject);
+			child.on("close", resolve);
+		});
+
+		expect(received, "no request means the CLI entry never ran").toHaveLength(1);
 	} finally {
 		server.close();
 	}
