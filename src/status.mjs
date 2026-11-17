@@ -45,7 +45,7 @@ export function buildStatusState(payload, records, subagentCost = 0, sync = {}) 
 		contextWindow: window.context_window_size ?? 0,
 		turnCost: last ? turnCost(last) : 0,
 		subagentCost,
-		carryCost: (contextTokens * cacheReadPrice(model, last?.timestamp ?? "")) / 1_000_000,
+		carryCost: (contextTokens * cacheReadPrice(model, last?.timestamp ?? "", contextTokens)) / 1_000_000,
 		priced: isPricedModel(model),
 		warnings,
 	};

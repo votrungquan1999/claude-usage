@@ -18,3 +18,23 @@ test("knows the 1M context window of Opus 5.5 and Fable 5.1, so their context us
 	expect(contextWindow("claude-fable-5-1")).toBe(1_000_000);
 });
 
+
+test("knows the context window of every model on the published price list", () => {
+	const expected = {
+		"claude-fable-5-2": 1_000_000,
+		"claude-sonnet-5-5": 1_000_000,
+		"claude-haiku-5-5": 1_000_000,
+		"claude-mythos-5-2": 1_000_000,
+		"claude-mythos-5-1": 1_000_000,
+		"claude-mythos-5": 1_000_000,
+		"claude-opus-4-6": 1_000_000,
+		"claude-opus-4-5-20251101": 200_000,
+		"claude-opus-4-1-20250805": 200_000,
+		"claude-opus-4-20250514": 200_000,
+		"claude-sonnet-4-5-20250929": 200_000,
+		"claude-sonnet-4-20250514": 200_000,
+	};
+
+	const actual = Object.fromEntries(Object.keys(expected).map((model) => [model, contextWindow(model)]));
+	expect(actual).toEqual(expected);
+});

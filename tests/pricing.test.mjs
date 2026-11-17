@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { cacheSavings, isPricedModel, periodAt, turnCarrySplit, turnCost } from "../src/parser/pricing.mjs";
+import { cacheReadPrice, cacheSavings, isPricedModel, periodAt, turnCarrySplit, turnCost } from "../src/parser/pricing.mjs";
 
 test("reports whether a model has a known price, so $0 is never mistaken for cheap", () => {
 	expect(isPricedModel("claude-opus-5[1m]")).toBe(true);
@@ -55,6 +55,77 @@ test("prices Opus 5.5 at $4/$20 with cache reads at 0.05x, not the usual 0.1x", 
 test("prices Fable 5.1 at $10/$50 with cache reads at 0.025x", () => {
 	// $10 input + $0.25 read (0.025x) + $12.50 5m (1.25x) + $20 1h (2.0x) + $50 output
 	expect(turnCost(mtokTurn("claude-fable-5-1"))).toBeCloseTo(92.75, 10);
+});
+
+test("prices Sonnet 5.5 at $2/$10 with cache reads at 0.05x", () => {
+	// $2 input + $0.10 read (0.05x) + $2.50 5m (1.25x) + $4 1h (2.0x) + $10 output
+	expect(turnCost(mtokTurn("claude-sonnet-5-5"))).toBeCloseTo(18.6, 10);
+});
+
+test("prices Fable 5.2 at $8/$40 with cache reads at 0.025x", () => {
+	// $8 input + $0.20 read (0.025x) + $10 5m (1.25x) + $16 1h (2.0x) + $40 output
+	expect(turnCost(mtokTurn("claude-fable-5-2"))).toBeCloseTo(74.2, 10);
+});
+
+/** A Haiku 5.5 turn whose prompt (input + cache read + both cache writes) totals `prompt` tokens. */
+function haikuTurn(prompt) {
+	const share = prompt / 10;
+	return {
+		requestId: "req",
+		messageId: "msg",
+		model: "claude-haiku-5-5",
+		timestamp: "2026-11-17T10:00:00.000Z",
+		usage: {
+			input_tokens: share,
+			cache_read_input_tokens: share * 5,
+			cache_creation_input_tokens: share * 4,
+			cache_creation: { ephemeral_5m_input_tokens: share * 2, ephemeral_1h_input_tokens: share * 2 },
+			output_tokens: 1_000_000,
+		},
+	};
+}
+
+test("prices a Haiku 5.5 prompt of up to 100K tokens at $0.10/$0.50", () => {
+	// 10K input @ $0.10 + 50K read @ $0.01 + 20K 5m @ $0.125 + 20K 1h @ $0.20 + 1M output @ $0.50
+	expect(turnCost(haikuTurn(100_000))).toBeCloseTo(0.508, 10);
+});
+
+test("prices a whole Haiku 5.5 request at $0.50/$2.50 once its prompt passes 100K tokens, cache hits included", () => {
+	// 11K input @ $0.50 + 55K read @ $0.05 + 22K 5m @ $0.625 + 22K 1h @ $1 + 1M output @ $2.50
+	expect(turnCost(haikuTurn(110_000))).toBeCloseTo(2.544, 10);
+});
+
+test("splits a long-prompt Haiku 5.5 turn at the long-prompt input price", () => {
+	const tokens = { cacheReadTokens: 60_000, cacheWrite5mTokens: 22_000, cacheWrite1hTokens: 22_000 };
+
+	// (60K read @ 0.1x + 22K 5m @ 1.25x + 22K 1h @ 2.0x) at $0.50 input
+	const split = turnCarrySplit("claude-haiku-5-5", "2026-11-17T10:00:00.000Z", tokens, 1);
+	expect(split.carryUsd).toBeCloseTo(0.03875, 10);
+	expect(split.newUsd).toBeCloseTo(0.96125, 10);
+});
+
+test("re-reads a Haiku 5.5 context past 100K tokens at the long-prompt cache price", () => {
+	expect(cacheReadPrice("claude-haiku-5-5", "2026-11-17T10:00:00.000Z", 80_000)).toBeCloseTo(0.01, 10);
+	expect(cacheReadPrice("claude-haiku-5-5", "2026-11-17T10:00:00.000Z", 150_000)).toBeCloseTo(0.05, 10);
+});
+
+test("prices every model on the published price list, each at its own rate", () => {
+	// [model, $ for one MTok in every bucket]: input + read + 1.25x + 2.0x + output
+	const expected = [
+		["claude-mythos-5-2", 74.2],
+		["claude-mythos-5-1", 92.75],
+		["claude-mythos-5", 93.5],
+		["claude-opus-4-6", 46.75],
+		["claude-opus-4-5-20251101", 46.75],
+		["claude-opus-4-1-20250805", 140.25],
+		["claude-opus-4-20250514", 140.25],
+		["claude-sonnet-4-5-20250929", 28.05],
+		["claude-sonnet-4-20250514", 28.05],
+	];
+
+	for (const [model, cost] of expected) {
+		expect([model, turnCost(mtokTurn(model))]).toEqual([model, expect.closeTo(cost, 10)]);
+	}
 });
 
 test("a price change applies from its date on, so past usage keeps the price it was billed at", () => {

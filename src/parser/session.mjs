@@ -20,7 +20,8 @@ export function carryCost(turns) {
 	const last = lastRealTurn(turns);
 	if (!last) return 0;
 
-	return (contextSize(turns) * cacheReadPrice(last.model, last.timestamp)) / 1_000_000;
+	const tokens = contextSize(turns);
+	return (tokens * cacheReadPrice(last.model, last.timestamp, tokens)) / 1_000_000;
 }
 
 /**

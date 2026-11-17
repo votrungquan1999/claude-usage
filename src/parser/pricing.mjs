@@ -12,11 +12,24 @@ const PRICES = {
 	"claude-opus-5": [{ from: "", input: 5, output: 25 }],
 	"claude-opus-4-8": [{ from: "", input: 5, output: 25 }],
 	"claude-opus-4-7": [{ from: "", input: 5, output: 25 }],
+	"claude-opus-4-6": [{ from: "", input: 5, output: 25 }],
+	"claude-opus-4-5": [{ from: "", input: 5, output: 25 }],
+	"claude-opus-4-1": [{ from: "", input: 15, output: 75 }],
+	"claude-opus-4": [{ from: "", input: 15, output: 75 }],
+	"claude-sonnet-5-5": [{ from: "", input: 2, output: 10, cacheRead: 0.05 }],
 	// Launched as "introductory"; the rise to $3/$15 scheduled for 2026-09-01 was cancelled.
 	"claude-sonnet-5": [{ from: "", input: 2, output: 10 }],
 	"claude-sonnet-4-6": [{ from: "", input: 3, output: 15 }],
+	"claude-sonnet-4-5": [{ from: "", input: 3, output: 15 }],
+	"claude-sonnet-4": [{ from: "", input: 3, output: 15 }],
+	"claude-fable-5-2": [{ from: "", input: 8, output: 40, cacheRead: 0.025 }],
 	"claude-fable-5-1": [{ from: "", input: 10, output: 50, cacheRead: 0.025 }],
 	"claude-fable-5": [{ from: "", input: 10, output: 50 }],
+	"claude-mythos-5-2": [{ from: "", input: 8, output: 40, cacheRead: 0.025 }],
+	"claude-mythos-5-1": [{ from: "", input: 10, output: 50, cacheRead: 0.025 }],
+	"claude-mythos-5": [{ from: "", input: 10, output: 50 }],
+	// `longPrompt` reprices the whole request once its prompt (input + cache read + cache writes) passes `over`.
+	"claude-haiku-5-5": [{ from: "", input: 0.1, output: 0.5, longPrompt: { over: 100_000, input: 0.5, output: 2.5 } }],
 	"claude-haiku-4-5": [{ from: "", input: 1, output: 5 }],
 };
 
@@ -38,9 +51,21 @@ export function periodAt(periods, timestamp) {
 	return match;
 }
 
-function priceAt(model, timestamp) {
+/**
+ * The rates one request pays: the period's own, or its long-prompt rates once the prompt passes the threshold.
+ *
+ * @param {string} model
+ * @param {string} timestamp
+ * @param {number} [promptTokens] - input + cache read + cache writes; omitted prices at the base tier
+ * @returns {object | null}
+ */
+function priceAt(model, timestamp, promptTokens = 0) {
 	const periods = PRICES[normalizeModel(model)];
-	return periods ? periodAt(periods, timestamp) : null;
+	const period = periods ? periodAt(periods, timestamp) : null;
+	if (!period?.longPrompt || promptTokens <= period.longPrompt.over) return period;
+
+	const { input, output } = period.longPrompt;
+	return { ...period, input, output };
 }
 
 /** Cache tiers bill as multiples of the base input price. */
@@ -72,10 +97,11 @@ export function isPricedModel(model) {
  *
  * @param {string} model
  * @param {string} timestamp
+ * @param {number} [contextTokens] - the context being re-read; picks a long-prompt tier where the model has one
  * @returns {number} 0 when the model is unknown
  */
-export function cacheReadPrice(model, timestamp) {
-	const price = priceAt(model, timestamp);
+export function cacheReadPrice(model, timestamp, contextTokens = 0) {
+	const price = priceAt(model, timestamp, contextTokens);
 	return price ? price.input * readRate(price) : 0;
 }
 
@@ -86,11 +112,16 @@ export function cacheReadPrice(model, timestamp) {
  * @returns {number} USD
  */
 export function turnCost(turn) {
-	const price = priceAt(turn.model, turn.timestamp);
-	if (!price) return 0;
-
 	const usage = turn.usage;
 	const creation = usage.cache_creation ?? {};
+	const promptTokens =
+		usage.input_tokens +
+		usage.cache_read_input_tokens +
+		(creation.ephemeral_5m_input_tokens ?? 0) +
+		(creation.ephemeral_1h_input_tokens ?? 0);
+
+	const price = priceAt(turn.model, turn.timestamp, promptTokens);
+	if (!price) return 0;
 
 	const perMillion =
 		usage.input_tokens * price.input +
@@ -120,7 +151,9 @@ export function turnCost(turn) {
  * @returns {{carryUsd: number, newUsd: number}}
  */
 export function turnCarrySplit(model, timestamp, tokens, costUsd) {
-	const price = priceAt(model, timestamp);
+	// Cache tokens are the whole prompt bar a near-zero uncached remainder, so they pick the tier.
+	const promptTokens = tokens.cacheReadTokens + tokens.cacheWrite5mTokens + tokens.cacheWrite1hTokens;
+	const price = priceAt(model, timestamp, promptTokens);
 	if (!price) return { carryUsd: 0, newUsd: 0 };
 
 	const carryUsd =
@@ -145,6 +178,9 @@ export function turnCarrySplit(model, timestamp, tokens, costUsd) {
  *
  * An unknown model returns all zeros, which is indistinguishable from no cache activity — pair
  * this with `isPricedModel` rather than reading a zero as measured.
+ *
+ * Tokens here are summed across requests, so a long-prompt tier (Haiku 5.5) can't be told apart and
+ * prices at the base rate — it understates that model's savings.
  *
  * @param {string} model
  * @param {string} timestamp - ISO-8601 UTC, or a bare `YYYY-MM-DD`; both compare correctly
