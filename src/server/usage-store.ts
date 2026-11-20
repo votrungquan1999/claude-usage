@@ -6,6 +6,9 @@ export const USAGE_EVENTS_COLLECTION = "usage_events";
 /** Name of the collection holding one row per machine's sync history. */
 export const MACHINE_SYNC_STATE_COLLECTION = "machine_sync_state";
 
+/** Name of the collection holding one row per session: every repository it worked in. */
+export const SESSION_REPO_TAGS_COLLECTION = "session_repo_tags";
+
 /**
  * One assistant message's token usage, as stored. Aggregates only — no transcript content
  * ever reaches this collection.
@@ -52,6 +55,23 @@ export interface UsageEventDocument {
 }
 
 /**
+ * Every repository one session worked in, as its machines reported them. Only ever grows: a tail
+ * sync sees part of a session, so a repository missing from one report was not left.
+ */
+export interface SessionRepoTagsDocument {
+	_id?: ObjectId;
+	sessionId: string;
+	/** Remote hash (the same value as `repoKey`) to `<parent>/<name>` of the main checkout. */
+	repos: Record<string, string>;
+}
+
+/** One session's tags as the sync route hands them to the store. */
+export interface SessionRepoTagsInput {
+	sessionId: string;
+	tags: { key: string; name: string }[];
+}
+
+/**
  * Create the indexes the sync path depends on. Safe to call repeatedly.
  *
  * @param db - the connected database
@@ -72,6 +92,11 @@ export async function ensureUsageIndexes(db: Db): Promise<void> {
 	// without this it's a full COLLSCAN over the whole collection on a shared M0. Ascending
 	// timestamp too so the matched set comes back pre-sorted for the breakdown.
 	await collection.createIndex({ sessionId: 1, timestamp: 1 }, { name: "by_session" });
+
+	// One tag document per session; the dashboard's per-session lookup reads it by this key too.
+	await db
+		.collection<SessionRepoTagsDocument>(SESSION_REPO_TAGS_COLLECTION)
+		.createIndex({ sessionId: 1 }, { unique: true, name: "session_identity" });
 }
 
 /**
@@ -136,6 +161,29 @@ export async function saveUsageEvents(db: Db, events: UsageEventDocument[]): Pro
 	await db.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION).bulkWrite(operations, { ordered: false });
 
 	return events.length;
+}
+
+/**
+ * Add each session's repositories to its tag document.
+ *
+ * @param db - the connected database
+ * @param entries - sessions and the repositories they worked in
+ */
+export async function saveSessionRepoTags(db: Db, entries: SessionRepoTagsInput[]): Promise<void> {
+	const operations = entries
+		.filter((entry) => entry.tags.length > 0)
+		.map((entry) => ({
+			updateOne: {
+				filter: { sessionId: entry.sessionId },
+				// One field per repository, set by key: a repeat report rewrites the same field and a new
+				// one adds a field, so the map never shrinks and never holds a key twice.
+				update: { $set: Object.fromEntries(entry.tags.map((tag) => [`repos.${tag.key}`, tag.name])) },
+				upsert: true,
+			},
+		}));
+	if (operations.length === 0) return;
+
+	await db.collection<SessionRepoTagsDocument>(SESSION_REPO_TAGS_COLLECTION).bulkWrite(operations, { ordered: false });
 }
 
 /**

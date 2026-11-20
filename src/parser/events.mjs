@@ -57,7 +57,8 @@ import { isPricedModel, turnCost } from "./pricing.mjs";
  * The session's display name, as Claude Code recorded it.
  *
  * Lives in its OWN `ai-title` record rather than on any assistant turn, and is rewritten as the
- * session develops — so the last one is the current one.
+ * session develops — so the last one is the current one. A `/rename` writes a `custom-title`
+ * record instead, and the owner's own name outranks Claude Code's guess.
  *
  * This is the one field here derived from conversation CONTENT rather than counts. It is uploaded
  * deliberately; `lastPrompt`, which sits in the same transcripts and holds raw prompt text, is not
@@ -67,15 +68,19 @@ import { isPricedModel, turnCost } from "./pricing.mjs";
  * @returns {string|undefined} the latest title, or undefined when the transcript carries none
  */
 export function resolveSessionTitle(records) {
-	let title;
+	let aiTitle;
+	let customTitle;
 	for (const record of records) {
 		// Empty titles are skipped rather than accepted: a blank one would win over a real earlier
 		// title and render as an empty name column.
 		if (record?.type === "ai-title" && typeof record.aiTitle === "string" && record.aiTitle !== "") {
-			title = record.aiTitle;
+			aiTitle = record.aiTitle;
+		}
+		if (record?.type === "custom-title" && typeof record.customTitle === "string" && record.customTitle !== "") {
+			customTitle = record.customTitle;
 		}
 	}
-	return title;
+	return customTitle ?? aiTitle;
 }
 
 export function mapTurnToEvent(turn, { projectSlug, machineId, repoKey, repoName, accountLedger, sessionTitle }) {

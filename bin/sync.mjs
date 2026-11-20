@@ -19,6 +19,7 @@ import { attributeTurns, resolveProjectAttribution } from "../src/parser/attribu
 import { dedupeAssistantTurns } from "../src/parser/dedupe.mjs";
 import { mapTurnToEvent, resolveSessionTitle } from "../src/parser/events.mjs";
 import { readTailRecords, streamRecords } from "../src/parser/read.mjs";
+import { resolveRepoTags, tapEvidenceDirs } from "../src/parser/repo-tags.mjs";
 
 /**
  * Tail-sync one transcript's unsent usage to the hosted store.
@@ -81,15 +82,18 @@ export async function syncTail({ transcriptPath, env = process.env, home = homed
 
 /** Read strategy for one transcript file, per the `full` flag documented on `syncTail`. */
 function readTranscriptRecords(path, full) {
-	return full ? streamRecords(path) : readTailRecords(path);
+	// An array either way: callers read the records twice (turns, then title), and a generator drains on the first.
+	return full ? [...streamRecords(path)] : readTailRecords(path);
 }
 
 async function syncOnce({ transcriptPath, home, apiUrl, secret, full }) {
 	try {
 		// Read once and keep the raw records: the session title lives in its own `ai-title` record,
 		// which dedupeAssistantTurns filters out along with everything that is not an assistant turn.
+		// Folders are collected on the way through, so a streamed read is still walked only once.
+		const evidenceDirs = new Set();
 		const mainRecords = readTranscriptRecords(transcriptPath, full);
-		const mainTurns = dedupeAssistantTurns(mainRecords);
+		const mainTurns = dedupeAssistantTurns(tapEvidenceDirs(mainRecords, evidenceDirs));
 		// May be undefined on a tail read that did not reach back far enough to include it — the
 		// mapper then omits the field, leaving any title an earlier sync recorded in place.
 		const sessionTitle = resolveSessionTitle(mainRecords);
@@ -101,7 +105,7 @@ async function syncOnce({ transcriptPath, home, apiUrl, secret, full }) {
 		// through a chronological stream, and a subagent's turns are their own stream, not a
 		// continuation of the main one.
 		const subagentGroups = listSubagentTranscripts(transcriptPath).map((path) =>
-			dedupeAssistantTurns(readTranscriptRecords(path, full)),
+			dedupeAssistantTurns(tapEvidenceDirs(readTranscriptRecords(path, full), evidenceDirs)),
 		);
 		const subagentTurns = subagentGroups.flat();
 
@@ -130,12 +134,15 @@ async function syncOnce({ transcriptPath, home, apiUrl, secret, full }) {
 		const events = [toEvents(mainTurns), ...subagentGroups.map(toEvents)].flat();
 		if (events.length === 0) return { sent: 0 };
 
+		// Partial on a tail read, which is fine: the server only ever adds to a session's tags.
+		const sessionTags = sessionTagsFor(sessionId, resolveRepoTags(evidenceDirs));
+
 		// Batched: a full sweep of a large session can produce far more events than the tail
 		// path ever did, and Vercel's request body cap is a hard, non-configurable 4.5 MB
 		// (same constant `bin/backfill.mjs` uses for the same reason).
 		let sent = 0;
 		for (const batch of chunk(events, BATCH_SIZE)) {
-			sent += (await postEvents({ apiUrl, secret, machineId, events: batch, home })).sent;
+			sent += (await postEvents({ apiUrl, secret, machineId, events: batch, sessionTags, home })).sent;
 		}
 		return { sent };
 	} catch {
@@ -144,6 +151,18 @@ async function syncOnce({ transcriptPath, home, apiUrl, secret, full }) {
 }
 
 const BATCH_SIZE = 2000;
+
+/**
+ * The request-body form of one session's repository tags, shared with `bin/backfill.mjs`.
+ *
+ * @param {string} sessionId
+ * @param {import("../src/parser/repo-tags.mjs").RepoTag[]} tags
+ * @returns {{sessionId: string, tags: import("../src/parser/repo-tags.mjs").RepoTag[]}[]|undefined}
+ *   undefined when there is nothing to tag, so the body carries no empty entry
+ */
+export function sessionTagsFor(sessionId, tags) {
+	return tags.length > 0 ? [{ sessionId, tags }] : undefined;
+}
 
 function* chunk(array, size) {
 	for (let i = 0; i < array.length; i += size) yield array.slice(i, i + size);
@@ -206,6 +225,9 @@ export function resolveSyncUrl(apiUrl) {
  * @param {string} options.secret
  * @param {string} options.machineId
  * @param {import("../src/parser/events.mjs").MappedUsageEvent[]} options.events
+ * @param {{sessionId: string, tags: import("../src/parser/repo-tags.mjs").RepoTag[]}[]} [options.sessionTags] -
+ *   every repository each session worked in. Sent with every batch: the server's upsert only adds,
+ *   so a repeat costs nothing and a failed earlier batch loses nothing.
  * @param {string} [options.home] - when given, a successful response stamps the local sync
  *   watermark under this home (card #161 D6). `syncTail` passes it; `bin/backfill.mjs` deliberately
  *   omits it, since a backfill run is not evidence the machine's LIVE sync path is healthy.
@@ -216,7 +238,7 @@ export function resolveSyncUrl(apiUrl) {
  *   response, or on a 200 whose body isn't the sync route's own `{accepted, rejected}` shape
  *   (R31: a 200 from the wrong endpoint must never read as a successful send).
  */
-export async function postEvents({ apiUrl, secret, machineId, events, home, isBackfill = false }) {
+export async function postEvents({ apiUrl, secret, machineId, events, sessionTags, home, isBackfill = false }) {
 	const response = await fetch(resolveSyncUrl(apiUrl), {
 		method: "POST",
 		headers: {
@@ -224,7 +246,7 @@ export async function postEvents({ apiUrl, secret, machineId, events, home, isBa
 			[SECRET_HEADER]: secret,
 			...(isBackfill && { [BACKFILL_HEADER]: "1" }),
 		},
-		body: JSON.stringify({ machineId, events }),
+		body: JSON.stringify({ machineId, events, ...(sessionTags && { sessionTags }) }),
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 	});
 

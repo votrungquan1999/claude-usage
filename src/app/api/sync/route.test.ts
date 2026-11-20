@@ -573,3 +573,46 @@ test("the session title survives the server's own allowlist and reaches the stor
 	const stored = await db.collection("usage_events").findOne({ requestId: "req_title" });
 	expect(stored?.sessionTitle).toBe("Migrate the test runner");
 });
+
+test("a session's repository tags accumulate across syncs, never shrinking or listing a repository twice", async () => {
+	const keyA = "a".repeat(64);
+	const keyB = "b".repeat(64);
+	const post = (tags: { key: string; name: string }[]) =>
+		POST(
+			syncRequest(
+				{ machineId: "machine-tags", events: [usageEvent({ requestId: "req_tags", messageId: "msg_tags", sessionId: "session-tags" })], sessionTags: [{ sessionId: "session-tags", tags }] },
+				{ "x-claude-usage-secret": SECRET },
+			),
+		);
+
+	await post([{ key: keyA, name: "personal/alpha" }]);
+	// A later tail sync no longer sees the first repository, and sees it again alongside a new one.
+	await post([{ key: keyB, name: "personal/beta" }]);
+	const response = await post([{ key: keyA, name: "personal/alpha" }]);
+
+	expect(response.status).toBe(200);
+	const stored = await db.collection("session_repo_tags").find({ sessionId: "session-tags" }).toArray();
+	expect(stored).toHaveLength(1);
+	expect(stored[0].repos).toEqual({ [keyA]: "personal/alpha", [keyB]: "personal/beta" });
+});
+
+test("a tag whose key is not a remote hash is dropped with its entry, never written as a nested or operator field", async () => {
+	const response = await POST(
+		syncRequest(
+			{
+				machineId: "machine-tags",
+				events: [],
+				sessionTags: [
+					{ sessionId: "session-hostile-tag", tags: [{ key: "x.y", name: "personal/alpha" }] },
+					{ sessionId: "session-good-tag", tags: [{ key: "c".repeat(64), name: "personal/gamma" }] },
+				],
+			},
+			{ "x-claude-usage-secret": SECRET },
+		),
+	);
+
+	expect(response.status).toBe(200);
+	expect(await db.collection("session_repo_tags").countDocuments({ sessionId: "session-hostile-tag" })).toBe(0);
+	const good = await db.collection("session_repo_tags").findOne({ sessionId: "session-good-tag" });
+	expect(good?.repos).toEqual({ ["c".repeat(64)]: "personal/gamma" });
+});

@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,6 +132,35 @@ test("a successful backfill run does not stamp the sync watermark, even though i
 	}
 });
 
+test("a backfilled session carries its title, even when the title record comes after the turns", async () => {
+	const home = fakeHome();
+	const projectsRoot = mkdtempSync(join(tmpdir(), "claude-usage-backfill-projects-"));
+	const projectDir = join(projectsRoot, "-Users-me-project");
+	writeTranscript(projectDir, "session-1.jsonl", [
+		assistantRecord({
+			requestId: "req_1",
+			messageId: "msg_1",
+			sessionId: "session-1",
+			timestamp: "2026-08-01T10:00:00.000Z",
+			cwd: "/Users/me/project",
+		}),
+		{ type: "custom-title", customTitle: "gym trainning", sessionId: "session-1" },
+	]);
+
+	const { server, url, received } = await startFakeServer();
+	try {
+		await runBackfill({
+			projectsRoot,
+			home,
+			env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" },
+		});
+
+		expect(received[0].events[0].sessionTitle).toBe("gym trainning");
+	} finally {
+		server.close();
+	}
+});
+
 test("a backfill request carries the x-claude-usage-backfill marker header, so the server can also skip stamping machine_sync_state (card #161 D17 Fix A)", async () => {
 	// The LOCAL watermark exemption (D6, above) is only half the fix — R3 found the SERVER'S own
 	// machine_sync_state record still gets stamped on a backfill, with no way to tell it apart
@@ -194,6 +223,31 @@ test("posts repoKey once per project directory when its cwd is a real git repo",
 
 		expect(summary.eventsSent).toBe(1);
 		expect(received[0].events[0].repoKey, "expected a sha256 hex digest").toMatch(/^[0-9a-f]{64}$/);
+	} finally {
+		server.close();
+	}
+});
+
+test("posts every repository each backfilled session worked in alongside its events", async () => {
+	const home = fakeHome();
+	const repoDir = realpathSync(mkdtempSync(join(tmpdir(), "claude-usage-backfill-tag-")));
+	execFileSync("git", ["init", "-q"], { cwd: repoDir });
+	execFileSync("git", ["remote", "add", "origin", "git@github.com:org/tagged.git"], { cwd: repoDir });
+
+	const projectsRoot = mkdtempSync(join(tmpdir(), "claude-usage-backfill-projects-"));
+	// Started from a folder that is no repository; the edited file is the only evidence.
+	const edit = assistantRecord({ requestId: "req_bt", messageId: "msg_bt", sessionId: "session-bt", timestamp: "2026-08-01T10:00:00.000Z", cwd: "/Users/me/workspace" });
+	edit.message.content.push({ type: "tool_use", name: "Write", input: { file_path: join(repoDir, "notes.md") } });
+	writeTranscript(join(projectsRoot, "-Users-me-workspace"), "session-bt.jsonl", [edit]);
+
+	const { server, url, received } = await startFakeServer();
+	try {
+		await runBackfill({ projectsRoot, home, env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" } });
+
+		expect(received).toHaveLength(1);
+		expect(received[0].sessionTags).toEqual([
+			{ sessionId: "session-bt", tags: [{ key: expect.stringMatching(/^[0-9a-f]{64}$/), name: repoDir.split("/").slice(-2).join("/") }] },
+		]);
 	} finally {
 		server.close();
 	}

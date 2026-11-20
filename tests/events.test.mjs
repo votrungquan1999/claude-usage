@@ -72,6 +72,16 @@ test("the session title is the LAST ai-title record, since Claude Code rewrites 
 	expect(title).toBe("Migrate the test runner");
 });
 
+test("the owner's /rename name wins over Claude Code's own title, wherever each sits in the transcript", () => {
+	const title = resolveSessionTitle([
+		{ type: "ai-title", aiTitle: "Investigate flaky test" },
+		{ type: "custom-title", customTitle: "gym trainning" },
+		{ type: "ai-title", aiTitle: "Migrate the test runner" },
+	]);
+
+	expect(title).toBe("gym trainning");
+});
+
 test("a transcript with no ai-title record yields no title, rather than an empty string", () => {
 	// Absent, not "" — the mapper spreads the field in only when defined, and an empty string
 	// would be spread in and then rendered as a blank name column.

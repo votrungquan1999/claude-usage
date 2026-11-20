@@ -8,7 +8,8 @@ import { attributeTurns, resolveProjectAttribution } from "../src/parser/attribu
 import { dedupeAssistantTurns } from "../src/parser/dedupe.mjs";
 import { mapTurnToEvent, resolveSessionTitle } from "../src/parser/events.mjs";
 import { streamRecords } from "../src/parser/read.mjs";
-import { loadDotEnvIfNeeded, postEvents, readLedger } from "./sync.mjs";
+import { resolveRepoTags, tapEvidenceDirs } from "../src/parser/repo-tags.mjs";
+import { loadDotEnvIfNeeded, postEvents, readLedger, sessionTagsFor } from "./sync.mjs";
 
 /**
  * Bring every session already on the machine into the store, one re-runnable command.
@@ -75,10 +76,11 @@ export async function runBackfill({ projectsRoot, env = process.env, home = home
 			summary.filesProcessed++;
 
 			try {
-				// Read once and keep the raw records: the session title lives in its own `ai-title`
-				// record, which dedupeAssistantTurns filters out with every non-assistant record.
-				const records = streamRecords(transcriptPath);
-				const turns = dedupeAssistantTurns(records);
+				// Read once into an array: the title lives in its own record, which dedupeAssistantTurns
+				// filters out, and a generator would already be drained by the time the title is read.
+				const records = [...streamRecords(transcriptPath)];
+				const evidenceDirs = new Set();
+				const turns = dedupeAssistantTurns(tapEvidenceDirs(records, evidenceDirs));
 				const sessionTitle = resolveSessionTitle(records);
 				// One transcript is one chronological stream, which is the unit repo attribution
 				// carries forward through.
@@ -90,12 +92,16 @@ export async function runBackfill({ projectsRoot, env = process.env, home = home
 					.filter((event) => event !== null);
 				if (events.length === 0) continue;
 
+				// A subagent transcript is walked as its own file but carries its parent's sessionId,
+				// so its folders join the same session's tags on the server.
+				const sessionTags = sessionTagsFor(turns[0].sessionId, resolveRepoTags(evidenceDirs));
+
 				for (const batch of chunk(events, BATCH_SIZE)) {
 					// isBackfill: true (card #161 D17 Fix A) — a manual backfill is not evidence the
 					// machine's LIVE sync path is healthy; the server uses this marker to skip
 					// stamping machine_sync_state, the same way `home` being omitted already skips
 					// the local watermark (D6, above).
-					const result = await postEvents({ apiUrl, secret, machineId, events: batch, isBackfill: true });
+					const result = await postEvents({ apiUrl, secret, machineId, events: batch, sessionTags, isBackfill: true });
 					summary.requestsSent++;
 					summary.eventsSent += result.sent;
 					summary.eventsRejected += result.rejected;

@@ -5,6 +5,7 @@ import { cacheSavings, isPricedModel, turnCarrySplit } from "@/parser/pricing.mj
 
 import {
 	MACHINE_SYNC_STATE_COLLECTION,
+	SESSION_REPO_TAGS_COLLECTION,
 	USAGE_EVENTS_COLLECTION,
 	type MachineSyncStateDocument,
 	type UsageEventDocument,
@@ -357,22 +358,7 @@ export async function listSessions(
 	);
 
 	return {
-		rows: rows.map((row) => ({
-			sessionId: row._id,
-			projectSlug: row.projectSlug ?? UNATTRIBUTED_DIMENSION_VALUE,
-			machineId: row.machineId ?? UNATTRIBUTED_DIMENSION_VALUE,
-			startedAt: row.startedAt,
-			endedAt: row.endedAt,
-			costUsd: row.costUsd,
-			unpricedEventCount: row.unpricedEventCount,
-			eventCount: row.eventCount,
-			sessionTitle: row.latestTitle?.v,
-			// $addToSet returns the RAW stored strings; normalizing keeps this from being the one
-			// surface in the app that shows dated model ids.
-			models: [...new Set(row.models.map(normalizeModel))].sort(),
-			totalCostUsd: lifetime.get(row._id)?.costUsd ?? row.costUsd,
-			totalUnpricedEventCount: lifetime.get(row._id)?.unpricedEventCount ?? row.unpricedEventCount,
-		})),
+		rows: rows.map((row) => toSessionListRow(row, lifetime)),
 		totalCount: facet?.total[0]?.count ?? 0,
 	};
 }
@@ -383,8 +369,9 @@ export async function listSessions(
 export interface SplitValueBreakdown {
 	/** The label as the dashboard row showed it, echoed back. */
 	dimensionValue: string;
-	/** Cost attributed to THIS value inside the window — not the whole cost of the sessions
-	 * listed, which since per-turn attribution can span several repositories. */
+	/** Cost attributed to THIS value inside the window. On the Repo tab a tagged session counts in
+	 * full under each of its repositories, so these figures overlap across repository rows; on the
+	 * other tabs it is the slice of each listed session that carried this value. */
 	costUsd: number;
 	unpricedEventCount: number;
 	eventCount: number;
@@ -415,6 +402,8 @@ export async function splitValueBreakdown(
 	pageSize: number,
 	sort: SessionSortOrder,
 ): Promise<SplitValueBreakdown> {
+	if (dimension === CostSplitDimension.Repo) return repoValueBreakdown(db, value, range, pageIndex, pageSize, sort);
+
 	const match = await splitValueMatch(db, dimension, value, range);
 
 	const [facet] = await db
@@ -473,20 +462,167 @@ export async function splitValueBreakdown(
 		unpricedEventCount: totals?.unpricedEventCount ?? 0,
 		eventCount: totals?.eventCount ?? 0,
 		sessionCount: totals?.sessionCount ?? 0,
-		sessions: rows.map((row) => ({
-			sessionId: row._id,
-			projectSlug: row.projectSlug ?? UNATTRIBUTED_DIMENSION_VALUE,
-			machineId: row.machineId ?? UNATTRIBUTED_DIMENSION_VALUE,
-			startedAt: row.startedAt,
-			endedAt: row.endedAt,
-			costUsd: row.costUsd,
-			unpricedEventCount: row.unpricedEventCount,
-			eventCount: row.eventCount,
-			sessionTitle: row.latestTitle?.v,
-			models: [...new Set(row.models.map(normalizeModel))].sort(),
-			totalCostUsd: lifetime.get(row._id)?.costUsd ?? row.costUsd,
-			totalUnpricedEventCount: lifetime.get(row._id)?.unpricedEventCount ?? row.unpricedEventCount,
-		})),
+		sessions: rows.map((row) => toSessionListRow(row, lifetime)),
+	};
+}
+
+/**
+ * The Repo tab's drill-down. A tagged session counts in full under each of its tags, and an
+ * untagged one by its own events' `repoKey` — the same rule `repoTabRows` renders the rows by, so
+ * the header above the table equals the row that was clicked.
+ *
+ * @param db - the connected database
+ * @param value - the row's visible label
+ * @param range - required bound so the query hits `by_time`
+ * @param pageIndex - zero-based page number
+ * @param pageSize - rows per page
+ * @param sort - which ordering to page through
+ */
+async function repoValueBreakdown(
+	db: Db,
+	value: string,
+	range: DateRange,
+	pageIndex: number,
+	pageSize: number,
+	sort: SessionSortOrder,
+): Promise<SplitValueBreakdown> {
+	const empty = { dimensionValue: value, costUsd: 0, unpricedEventCount: 0, eventCount: 0, sessionCount: 0, sessions: [] };
+	const unattributed = value === UNATTRIBUTED_DIMENSION_VALUE;
+	const repoKey = unattributed ? null : await repoTabKeyForLabel(db, value, range);
+	// A label the dashboard never rendered: an empty range rather than an error.
+	if (repoKey === undefined) return empty;
+
+	const tagKeys = { $map: { input: { $objectToArray: { $ifNull: ["$repos", {}] } }, in: "$$this.k" } };
+	// `$literal`, because a stored key is client-supplied and one starting with `$` would otherwise
+	// be read as a field path.
+	const ownParts = { $filter: { input: "$parts", cond: { $eq: ["$$this.repoKey", { $literal: repoKey }] } } };
+	const taggedParts = unattributed ? [] : { $cond: [{ $in: [{ $literal: repoKey }, tagKeys] }, "$parts", []] };
+
+	const [facet] = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.aggregate<SplitValueFacet>([
+			{ $match: { timestamp: { $gte: range.from, $lte: range.to } } },
+			// One part per session and per-event attribution — what the untagged fallback needs.
+			{
+				$group: {
+					_id: { sessionId: "$sessionId", repoKey: { $ifNull: ["$repoKey", null] } },
+					projectSlug: { $first: "$projectSlug" },
+					machineId: { $first: "$machineId" },
+					startedAt: { $min: "$timestamp" },
+					endedAt: { $max: "$timestamp" },
+					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
+					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
+					eventCount: { $sum: 1 },
+					models: { $addToSet: "$model" },
+					// Newest non-null title, exactly as `listSessions` reads it.
+					latestTitle: {
+						$max: { $cond: [{ $ifNull: ["$sessionTitle", false] }, { t: "$timestamp", v: "$sessionTitle" }, null] },
+					},
+				},
+			},
+			// One document per session, so the tag lookup runs per session rather than per event.
+			{ $group: { _id: "$_id.sessionId", parts: { $push: { $mergeObjects: ["$$ROOT", { repoKey: "$_id.repoKey" }] } } } },
+			{ $lookup: { from: SESSION_REPO_TAGS_COLLECTION, localField: "_id", foreignField: "sessionId", as: "tagDocs" } },
+			{ $set: { repos: { $first: "$tagDocs.repos" } } },
+			// Which of the session's parts count here: all of them when it carries this tag, none when
+			// it carries only others, and its own matching events when it has no tags at all.
+			{
+				$set: {
+					counted: {
+						$cond: [{ $gt: [{ $size: tagKeys }, 0] }, taggedParts, ownParts],
+					},
+				},
+			},
+			{ $match: { "counted.0": { $exists: true } } },
+			{
+				$project: {
+					projectSlug: { $first: "$counted.projectSlug" },
+					machineId: { $first: "$counted.machineId" },
+					startedAt: { $min: "$counted.startedAt" },
+					endedAt: { $max: "$counted.endedAt" },
+					costUsd: { $sum: "$counted.costUsd" },
+					unpricedEventCount: { $sum: "$counted.unpricedEventCount" },
+					eventCount: { $sum: "$counted.eventCount" },
+					models: { $reduce: { input: "$counted.models", initialValue: [], in: { $setUnion: ["$$value", "$$this"] } } },
+					latestTitle: { $max: "$counted.latestTitle" },
+				},
+			},
+			{
+				$facet: {
+					page: [{ $sort: sortStageFor(sort) }, { $skip: pageIndex * pageSize }, { $limit: pageSize }],
+					totals: [
+						{
+							$group: {
+								_id: null,
+								costUsd: { $sum: "$costUsd" },
+								unpricedEventCount: { $sum: "$unpricedEventCount" },
+								eventCount: { $sum: "$eventCount" },
+								sessionCount: { $sum: 1 },
+							},
+						},
+					],
+				},
+			},
+		])
+		.toArray();
+
+	const rows = facet?.page ?? [];
+	const totals = facet?.totals[0];
+	if (!totals) return empty;
+	const lifetime = await sessionLifetimeTotals(
+		db,
+		rows.map((row) => row._id),
+	);
+
+	return {
+		dimensionValue: value,
+		costUsd: totals.costUsd,
+		unpricedEventCount: totals.unpricedEventCount,
+		eventCount: totals.eventCount,
+		sessionCount: totals.sessionCount,
+		sessions: rows.map((row) => toSessionListRow(row, lifetime)),
+	};
+}
+
+/**
+ * The repository a Repo-tab label names in this window, labelled by the same rows and rule the tab
+ * renders with, so a rendered row always resolves.
+ *
+ * @param db - the connected database
+ * @param value - the row's visible label
+ * @param range - the window the label was read in
+ * @returns the repoKey, or undefined when no rendered repository carries that label
+ */
+async function repoTabKeyForLabel(db: Db, value: string, range: DateRange): Promise<string | undefined> {
+	const labels = repoTabLabels(await repoTabRows(db, range, COLOR_DOMAIN_SENTINEL_DAY));
+	for (const [repoKey, label] of labels) {
+		if (label === value) return repoKey;
+	}
+	return undefined;
+}
+
+/**
+ * One grouped session as the list shows it, with its all-time totals folded in.
+ *
+ * @param row - the grouped session
+ * @param lifetime - all-time totals for the sessions on this page
+ */
+function toSessionListRow(row: RawSessionListRow, lifetime: Map<string, SessionLifetimeTotal>): SessionListRow {
+	return {
+		sessionId: row._id,
+		projectSlug: row.projectSlug ?? UNATTRIBUTED_DIMENSION_VALUE,
+		machineId: row.machineId ?? UNATTRIBUTED_DIMENSION_VALUE,
+		startedAt: row.startedAt,
+		endedAt: row.endedAt,
+		costUsd: row.costUsd,
+		unpricedEventCount: row.unpricedEventCount,
+		eventCount: row.eventCount,
+		sessionTitle: row.latestTitle?.v,
+		// $addToSet returns the RAW stored strings; normalizing keeps this from being the one
+		// surface in the app that shows dated model ids.
+		models: [...new Set(row.models.map(normalizeModel))].sort(),
+		totalCostUsd: lifetime.get(row._id)?.costUsd ?? row.costUsd,
+		totalUnpricedEventCount: lifetime.get(row._id)?.unpricedEventCount ?? row.unpricedEventCount,
 	};
 }
 
@@ -505,7 +641,8 @@ interface SplitValueFacet {
  * empty range rather than as an error — the same treatment an out-of-range window gets.
  *
  * @param db - the connected database
- * @param dimension - which split the value was read from
+ * @param dimension - which split the value was read from; Repo has its own drill-down,
+ *   `repoValueBreakdown`, since its sessions are placed by their tags rather than by an event filter
  * @param value - the row's visible label
  * @param range - the window the label was read in; labels are window-scoped, so this is required
  */
@@ -528,23 +665,12 @@ async function splitValueMatch(
 
 	const repoKey = await repoKeyForLabel(db, value, range);
 
-	if (dimension === CostSplitDimension.Repo) {
-		// On this tab every repo-less row collapses into one named bucket, so drilling into it means
-		// everything with no repository — not one project that happens to lack the field.
-		if (value === UNATTRIBUTED_DIMENSION_VALUE) return { repoKey: { $exists: false } };
-		return repoKey === undefined ? MATCHES_NOTHING : { repoKey };
-	}
-
 	// A project label can cover BOTH a repository and repo-less events carrying the same slug:
 	// since per-turn attribution, a turn that resolved the repo and one that fell back to the
 	// project directory land on the same name, and `rankDimensionTotals` sums them into one row.
 	const repoLess = { projectSlug: value, repoKey: { $exists: false } };
 	return repoKey === undefined ? repoLess : { $or: [{ repoKey }, repoLess] };
 }
-
-/** A filter for a label the dashboard never rendered. `$in: []` matches no document, which reads
- * downstream as an empty window rather than as a failure. */
-const MATCHES_NOTHING = { _id: { $in: [] } };
 
 /**
  * The repository a label names in this window, or undefined when no repository carries that label.
@@ -928,8 +1054,9 @@ export async function getSessionTurns(db: Db, sessionId: string): Promise<Sessio
 }
 
 /**
- * Cost per day, split by machine, project, or model (Step 19). A day with unpriced events in
- * range still returns `costUsd` — the caller renders it as a lower bound using
+ * Cost per day, split by machine, project, model, or repository (Step 19). The repository split
+ * places each session by its tags (`repoTabRows`), so its rows can sum to more than was spent. A
+ * day with unpriced events in range still returns `costUsd` — the caller renders it as a lower bound using
  * `unpricedEventCount` (D17); this function never estimates or hides an unpriced total.
  *
  * @param db - the connected database
@@ -941,6 +1068,11 @@ export async function costPerDay(
 	dimension: CostSplitDimension,
 	range: DateRange,
 ): Promise<DailyCostByDimensionRow[]> {
+	const dayExpression = { $dateToString: { date: "$timestamp", format: "%Y-%m-%d", timezone: DASHBOARD_TIMEZONE } };
+	// D14/D31: every repo-less row folds into ONE named bucket — on this tab "no repository" is a
+	// single real answer.
+	if (dimension === CostSplitDimension.Repo) return mergeRepoRows(await repoTabRows(db, range, dayExpression)).map(dropRepoKey);
+
 	const rows = await db
 		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
 		.aggregate<RawDimensionRow>([
@@ -969,9 +1101,6 @@ export async function costPerDay(
 	// takes its label from `repoLabelsAcrossRange` — git's own main-checkout name where one was
 	// recorded, else the slug that carried the most events.
 	if (dimension === CostSplitDimension.Project) return mergeProjectRowsByRepoKey(dimensionRows).map(dropRepoKey);
-	// D14/D31: the same repoKey grouping as Project, but every repo-less row folds into ONE named
-	// bucket — on this tab "no repository" is a single real answer.
-	if (dimension === CostSplitDimension.Repo) return mergeRepoRows(dimensionRows).map(dropRepoKey);
 	return dimensionRows.map(dropRepoKey);
 }
 
@@ -1074,6 +1203,10 @@ const COLOR_DOMAIN_SENTINEL_DAY = "__color-domain__";
  * @param lookbackRange - a wide, fixed bound (365 days) so the ordering is stable across window changes
  */
 export async function dimensionValueDomain(db: Db, dimension: CostSplitDimension, lookbackRange: DateRange): Promise<string[]> {
+	if (dimension === CostSplitDimension.Repo) {
+		return rankDomain(mergeRepoRows(await repoTabRows(db, lookbackRange, COLOR_DOMAIN_SENTINEL_DAY)));
+	}
+
 	const rows = await db
 		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
 		.aggregate<RawDimensionRow>([
@@ -1092,9 +1225,17 @@ export async function dimensionValueDomain(db: Db, dimension: CostSplitDimension
 	let merged: DimensionRowWithRepoKey[];
 	if (dimension === CostSplitDimension.Model) merged = mergeByNormalizedDimension(dimensionRows);
 	else if (dimension === CostSplitDimension.Project) merged = mergeProjectRowsByRepoKey(dimensionRows);
-	else if (dimension === CostSplitDimension.Repo) merged = mergeRepoRows(dimensionRows);
 	else merged = dimensionRows;
 
+	return rankDomain(merged);
+}
+
+/**
+ * Merged colour-domain rows as an ordered list of labels: cost descending, alphabetical tie-break.
+ *
+ * @param merged - one row per rendered label, all on the sentinel day
+ */
+function rankDomain(merged: DimensionRowWithRepoKey[]): string[] {
 	return merged
 		.sort((a, b) => b.costUsd - a.costUsd || a.dimensionValue.localeCompare(b.dimensionValue))
 		.map((row) => row.dimensionValue);
@@ -1334,6 +1475,27 @@ function rank(byName: Map<string, number>): string {
 }
 
 /**
+ * The Repo tab's labels: `repoLabelsAcrossRange`, made unique. Rows are keyed by label from here on
+ * (totals, colours, drill-down links), so two different repositories checked out under the same
+ * `<parent>/<name>` would otherwise merge into one row that drills into only one of them. The
+ * repeats are numbered in repoKey order, which does not depend on the window's spend.
+ *
+ * @param rows - every row in the window, each carrying its repoKey when one was resolved
+ */
+function repoTabLabels(rows: DimensionRowWithRepoKey[]): Map<string, string> {
+	const labels = repoLabelsAcrossRange(rows);
+	const keysByLabel = new Map<string, string[]>();
+	for (const [repoKey, label] of labels) keysByLabel.set(label, [...(keysByLabel.get(label) ?? []), repoKey]);
+
+	for (const [label, repoKeys] of keysByLabel) {
+		if (repoKeys.length < 2) continue;
+		repoKeys.sort();
+		repoKeys.forEach((repoKey, index) => labels.set(repoKey, index === 0 ? label : `${label} (${index + 1})`));
+	}
+	return labels;
+}
+
+/**
  * A row's display label: its repository's window-wide name, or its own slug when it has no
  * repository.
  *
@@ -1346,17 +1508,18 @@ function labelFor(row: DimensionRowWithRepoKey, labels: Map<string, string>): st
 }
 
 /**
- * Folds rows into one row per repository per day, labeled by `repoLabelsAcrossRange` (D20: the
+ * Folds rows into one row per repository per day, labeled by `repoTabLabels` (D20: the
  * label has to be derived, since repoKey is opaque). Differs from `mergeProjectRowsByRepoKey` in
  * one deliberate way: every row with NO repoKey collapses into a single explicitly-named bucket
  * rather than standing alone. On the Project tab those are separate projects that happen to share
  * a missing field; on this tab "no repository" is the answer itself, and today that is over half
  * of all spend — splitting it across project names would hide how much is unattributed.
  *
- * @param rows - rows keyed by (day, projectSlug), each carrying its repoKey when resolved
+ * @param rows - `repoTabRows` output: per day, a tagged session's whole spend under each tag, or an
+ *   untagged session's spend per projectSlug and repoKey
  */
 function mergeRepoRows(rows: DimensionRowWithRepoKey[]): DimensionRowWithRepoKey[] {
-	const labels = repoLabelsAcrossRange(rows);
+	const labels = repoTabLabels(rows);
 	const merged = new Map<string, DimensionRowWithRepoKey>();
 
 	for (const row of rows) {
@@ -1378,6 +1541,111 @@ function mergeRepoRows(rows: DimensionRowWithRepoKey[]): DimensionRowWithRepoKey
 	}
 
 	return [...merged.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+/** One session's in-window spend before its tags are applied, split by day and by the repository
+ * each event was attributed to on its own. */
+interface RawRepoTabSession {
+	_id: string;
+	parts: {
+		day: string;
+		repoKey: string | null;
+		projectSlug?: string | null;
+		repoName?: string | null;
+		costUsd: number;
+		unpricedEventCount: number;
+		eventCount: number;
+	}[];
+	/** The session's tag document's map of repoKey to name; absent when it has none. */
+	repos?: Record<string, string> | null;
+}
+
+/**
+ * The Repo tab's rows before merging: each tagged session's whole daily spend once under EVERY
+ * repository it worked in, so repository totals deliberately add up to more than was spent. A
+ * session with no tag document yet (synced before tags existed) falls back to each event's own
+ * `repoKey`, exactly as the split read before tags.
+ *
+ * Events are grouped down to one entry per session BEFORE the tag lookup, so the lookup runs once
+ * per session rather than once per event.
+ *
+ * @param db - the connected database
+ * @param range - required bound so the query hits `by_time`
+ * @param day - the `$dateToString` expression, or the sentinel the colour domain groups on
+ */
+async function repoTabRows(db: Db, range: DateRange, day: unknown): Promise<DimensionRowWithRepoKey[]> {
+	const sessions = await db
+		.collection<UsageEventDocument>(USAGE_EVENTS_COLLECTION)
+		.aggregate<RawRepoTabSession>([
+			{ $match: { timestamp: { $gte: range.from, $lte: range.to } } },
+			// One part per session, day and per-event attribution — what the fallback needs.
+			{
+				$group: {
+					_id: { sessionId: "$sessionId", day, repoKey: { $ifNull: ["$repoKey", null] }, projectSlug: "$projectSlug" },
+					costUsd: { $sum: { $cond: ["$priced", "$costUsd", 0] } },
+					unpricedEventCount: { $sum: { $cond: ["$priced", 0, 1] } },
+					eventCount: { $sum: 1 },
+					repoName: { $max: "$repoName" },
+				},
+			},
+			// Then one document per session, so the lookup below runs per session.
+			{
+				$group: {
+					_id: "$_id.sessionId",
+					parts: {
+						$push: {
+							day: "$_id.day",
+							repoKey: "$_id.repoKey",
+							projectSlug: "$_id.projectSlug",
+							repoName: "$repoName",
+							costUsd: "$costUsd",
+							unpricedEventCount: "$unpricedEventCount",
+							eventCount: "$eventCount",
+						},
+					},
+				},
+			},
+			{ $lookup: { from: SESSION_REPO_TAGS_COLLECTION, localField: "_id", foreignField: "sessionId", as: "tagDocs" } },
+			{ $project: { parts: 1, repos: { $first: "$tagDocs.repos" } } },
+		])
+		.toArray();
+
+	return sessions.flatMap(expandRepoTabSession);
+}
+
+/**
+ * One session's rows on the Repo tab: its whole spend per day under each tag, or its untagged
+ * per-event parts as they are.
+ *
+ * @param session - one grouped session with its tag map
+ */
+function expandRepoTabSession(session: RawRepoTabSession): DimensionRowWithRepoKey[] {
+	const tags = Object.entries(session.repos ?? {});
+	if (tags.length === 0) {
+		return session.parts.map((part) => ({
+			day: part.day,
+			dimensionValue: part.projectSlug ?? UNATTRIBUTED_DIMENSION_VALUE,
+			costUsd: part.costUsd,
+			unpricedEventCount: part.unpricedEventCount,
+			eventCount: part.eventCount,
+			repoKey: part.repoKey ?? undefined,
+			repoName: part.repoName ?? undefined,
+		}));
+	}
+
+	// The session's whole day, whatever each event was attributed to on its own.
+	const byDay = new Map<string, { costUsd: number; unpricedEventCount: number; eventCount: number }>();
+	for (const part of session.parts) {
+		const totals = byDay.get(part.day) ?? { costUsd: 0, unpricedEventCount: 0, eventCount: 0 };
+		totals.costUsd += part.costUsd;
+		totals.unpricedEventCount += part.unpricedEventCount;
+		totals.eventCount += part.eventCount;
+		byDay.set(part.day, totals);
+	}
+
+	return [...byDay].flatMap(([day, totals]) =>
+		tags.map(([repoKey, name]) => ({ day, dimensionValue: name, repoKey, repoName: name, ...totals })),
+	);
 }
 
 /** Strips the internal grouping fields before a row leaves this file — never exposed to callers. */

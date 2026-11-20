@@ -4,6 +4,7 @@ import { afterAll, beforeAll, expect, test, vi } from "vitest";
 
 import {
 	recordMachineSync,
+	saveSessionRepoTags,
 	setMachineName,
 	USAGE_EVENTS_COLLECTION,
 	ensureUsageIndexes,
@@ -1610,4 +1611,112 @@ test("the no-repository row reports the same figures as drilling into it", async
 
 	expect(unattributedRow).toEqual(expect.objectContaining({ costUsd: 3, eventCount: 1 }));
 	expect([breakdown.costUsd, breakdown.eventCount, breakdown.sessionCount]).toEqual([3, 1, 1]);
+});
+
+test("on the repo split, a tagged session counts in full under every repository it worked in", async () => {
+	// Tags replace per-turn attribution here: each repository gets the whole session, so the rows
+	// add up to more than was spent. Neither event's own repoKey decides anything.
+	const range = dayRange("2027-04-01");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_tg_1", messageId: "msg_tg_1", sessionId: "tg-both", timestamp: range.from, projectSlug: "holder/dir", repoKey: "hash-tg-alpha", costUsd: 1 }),
+		event({ requestId: "req_tg_2", messageId: "msg_tg_2", sessionId: "tg-both", timestamp: range.from, projectSlug: "holder/dir", costUsd: 3 }),
+	]);
+	await saveSessionRepoTags(db, [
+		{ sessionId: "tg-both", tags: [{ key: "hash-tg-alpha", name: "personal/tg-alpha" }, { key: "hash-tg-beta", name: "personal/tg-beta" }] },
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+
+	expect(rows.map((row) => [row.dimensionValue, row.costUsd, row.eventCount]).sort()).toEqual([
+		["personal/tg-alpha", 4, 2],
+		["personal/tg-beta", 4, 2],
+	]);
+});
+
+test("the repo colour domain ranks tagged repositories by the full cost of their sessions, like the rendered rows", async () => {
+	const range = dayRange("2027-04-02");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_dm_tag", messageId: "msg_dm_tag", sessionId: "dm-tagged", timestamp: range.from, projectSlug: "holder/dir", costUsd: 5 }),
+		event({ requestId: "req_dm_old", messageId: "msg_dm_old", sessionId: "dm-untagged", timestamp: range.from, projectSlug: "personal/dm-epsilon", repoKey: "hash-dm-epsilon", repoName: "personal/dm-epsilon", costUsd: 6 }),
+	]);
+	await saveSessionRepoTags(db, [
+		{ sessionId: "dm-tagged", tags: [{ key: "hash-dm-gamma", name: "personal/dm-gamma" }, { key: "hash-dm-delta", name: "personal/dm-delta" }] },
+	]);
+
+	const domain = await dimensionValueDomain(db, CostSplitDimension.Repo, range);
+
+	expect(domain).toEqual(["personal/dm-epsilon", "personal/dm-delta", "personal/dm-gamma"]);
+});
+
+test("drilling into a tagged repository lists each tagged session at its full cost, and agrees with the row", async () => {
+	const range = dayRange("2027-04-03");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_dd_1", messageId: "msg_dd_1", sessionId: "dd-tagged", timestamp: range.from, projectSlug: "holder/dir", repoKey: "hash-dd-alpha", costUsd: 1 }),
+		event({ requestId: "req_dd_2", messageId: "msg_dd_2", sessionId: "dd-tagged", timestamp: range.from, projectSlug: "holder/dir", costUsd: 3 }),
+		// Synced before tags existed, so only its own event's repoKey places it.
+		event({ requestId: "req_dd_3", messageId: "msg_dd_3", sessionId: "dd-untagged", timestamp: range.from, projectSlug: "personal/dd-alpha", repoKey: "hash-dd-alpha", repoName: "personal/dd-alpha", costUsd: 2 }),
+	]);
+	await saveSessionRepoTags(db, [
+		{ sessionId: "dd-tagged", tags: [{ key: "hash-dd-alpha", name: "personal/dd-alpha" }, { key: "hash-dd-beta", name: "personal/dd-beta" }] },
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+	const drill = (label: string) => splitValueBreakdown(db, CostSplitDimension.Repo, label, range, 0, 25, SessionSortOrder.Cost);
+	const beta = await drill("personal/dd-beta");
+	const alpha = await drill("personal/dd-alpha");
+
+	expect(beta.sessions.map((session) => [session.sessionId, session.costUsd, session.eventCount])).toEqual([["dd-tagged", 4, 2]]);
+	expect(alpha.sessions.map((session) => [session.sessionId, session.costUsd])).toEqual([
+		["dd-tagged", 4],
+		["dd-untagged", 2],
+	]);
+	expect(rows.map((row) => [row.dimensionValue, row.costUsd, row.eventCount]).sort()).toEqual([
+		["personal/dd-alpha", alpha.costUsd, alpha.eventCount],
+		["personal/dd-beta", beta.costUsd, beta.eventCount],
+	]);
+});
+
+test("a tagged session never lands in the no-repository row, even when none of its events resolved a repository", async () => {
+	const range = dayRange("2027-04-04");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_nu_tag", messageId: "msg_nu_tag", sessionId: "nu-tagged", timestamp: range.from, projectSlug: "holder/dir", costUsd: 5 }),
+		event({ requestId: "req_nu_none", messageId: "msg_nu_none", sessionId: "nu-none", timestamp: range.from, projectSlug: "holder/dir", costUsd: 2 }),
+	]);
+	await saveSessionRepoTags(db, [{ sessionId: "nu-tagged", tags: [{ key: "hash-nu", name: "personal/nu-repo" }] }]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+	const breakdown = await splitValueBreakdown(db, CostSplitDimension.Repo, "(unattributed)", range, 0, 25, SessionSortOrder.Cost);
+
+	expect(breakdown.sessions.map((session) => session.sessionId)).toEqual(["nu-none"]);
+	expect(rows.find((row) => row.dimensionValue === "(unattributed)")).toEqual(
+		expect.objectContaining({ costUsd: breakdown.costUsd, eventCount: breakdown.eventCount }),
+	);
+});
+
+test("two different repositories tagged with the same name stay two rows, and each drills to its own sessions", async () => {
+	// Two remotes can both be checked out as `personal/twin`; merging them by name would hand one
+	// repository's sessions to the other and leave a row that drills into the wrong work.
+	const range = dayRange("2027-04-05");
+	await saveUsageEvents(db, [
+		event({ requestId: "req_tw_1", messageId: "msg_tw_1", sessionId: "tw-one", timestamp: range.from, projectSlug: "holder/dir", costUsd: 1 }),
+		event({ requestId: "req_tw_2", messageId: "msg_tw_2", sessionId: "tw-two", timestamp: range.from, projectSlug: "holder/dir", costUsd: 2 }),
+	]);
+	await saveSessionRepoTags(db, [
+		{ sessionId: "tw-one", tags: [{ key: "hash-tw-one", name: "personal/twin" }] },
+		{ sessionId: "tw-two", tags: [{ key: "hash-tw-two", name: "personal/twin" }] },
+	]);
+
+	const rows = await costPerDay(db, CostSplitDimension.Repo, range);
+	const drilled = await Promise.all(
+		rows.map(async (row) => {
+			const breakdown = await splitValueBreakdown(db, CostSplitDimension.Repo, row.dimensionValue, range, 0, 25, SessionSortOrder.Cost);
+			return [row.costUsd, breakdown.costUsd, breakdown.sessions.map((session) => session.sessionId)];
+		}),
+	);
+
+	expect(new Set(rows.map((row) => row.dimensionValue)).size).toBe(2);
+	expect(drilled.sort()).toEqual([
+		[1, 1, ["tw-one"]],
+		[2, 2, ["tw-two"]],
+	]);
 });

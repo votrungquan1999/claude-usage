@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -727,6 +727,60 @@ test("syncTail also uploads subagent work, including a subagent launched inside 
 		const main = events.find((e) => e.requestId === "req_main");
 		expect(subA.isSubagent).toBe(true);
 		expect(main.isSubagent).toBe(false);
+	} finally {
+		server.close();
+	}
+});
+
+test("a sync posts every repository the session worked in, from its main and subagent transcripts alike", async () => {
+	const home = fakeHome({ machineId: "machine-abc" });
+	const initRepo = (remote) => {
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "claude-usage-sync-tag-")));
+		execFileSync("git", ["init", "-q"], { cwd: dir });
+		execFileSync("git", ["remote", "add", "origin", remote], { cwd: dir });
+		return dir;
+	};
+	const startRepo = initRepo("git@github.com:org/start.git");
+	const editedRepo = initRepo("git@github.com:org/edited.git");
+
+	const projectDir = join(home, ".claude", "projects", "-Users-me-tags");
+	const transcript = writeTranscript(projectDir, "session-tags.jsonl", [
+		assistantRecord({ requestId: "req_tag_main", messageId: "msg_tag_main", sessionId: "session-tags", timestamp: "2026-08-01T09:00:00.000Z", cwd: startRepo, prose: "hi" }),
+	]);
+	// Only the subagent touches the second repository, so it can only come from that transcript.
+	const subagentEdit = assistantRecord({ requestId: "req_tag_sub", messageId: "msg_tag_sub", sessionId: "session-tags", timestamp: "2026-08-01T09:05:00.000Z", cwd: startRepo, prose: "sub" });
+	subagentEdit.message.content.push({ type: "tool_use", name: "Edit", input: { file_path: join(editedRepo, "a.ts") } });
+	writeTranscript(join(projectDir, "session-tags", "subagents"), "agent-a.jsonl", [{ ...subagentEdit, isSidechain: true }]);
+
+	const { server, url, received } = await startFakeServer();
+	try {
+		await syncTail({ transcriptPath: transcript, home, env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" }, full: true });
+
+		const posted = JSON.parse(received[0].body);
+		expect(posted.sessionTags).toHaveLength(1);
+		expect(posted.sessionTags[0].sessionId).toBe("session-tags");
+		expect(posted.sessionTags[0].tags.map((tag) => tag.name).sort()).toEqual(
+			[startRepo, editedRepo].map((dir) => dir.split("/").slice(-2).join("/")).sort(),
+		);
+		expect(posted.sessionTags[0].tags.every((tag) => /^[0-9a-f]{64}$/.test(tag.key))).toBe(true);
+	} finally {
+		server.close();
+	}
+});
+
+test("a full sync carries the session's title, even when the title record comes after the turns", async () => {
+	const home = fakeHome({ machineId: "machine-abc" });
+	const projectDir = join(home, ".claude", "projects", "-Users-me-project");
+	const transcript = writeTranscript(projectDir, "session-titled.jsonl", [
+		assistantRecord({ requestId: "req_titled", messageId: "msg_titled", sessionId: "session-titled", timestamp: "2026-08-01T10:00:00.000Z", cwd: "/Users/me/project", prose: "hi" }),
+		{ type: "custom-title", customTitle: "gym trainning", sessionId: "session-titled" },
+	]);
+
+	const { server, url, received } = await startFakeServer();
+	try {
+		await syncTail({ transcriptPath: transcript, home, env: { CLAUDE_USAGE_API_URL: url, CLAUDE_USAGE_SECRET: "shh" }, full: true });
+
+		expect(JSON.parse(received[0].body).events[0].sessionTitle).toBe("gym trainning");
 	} finally {
 		server.close();
 	}

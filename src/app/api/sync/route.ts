@@ -2,7 +2,14 @@ import { type NextRequest, NextResponse } from "next/server";
 
 import { verifySecret } from "@/app/api/lib/verify-secret";
 import { getDatabase } from "@/server/database";
-import { ensureUsageIndexes, recordMachineSync, saveUsageEvents, type UsageEventDocument } from "@/server/usage-store";
+import {
+	ensureUsageIndexes,
+	recordMachineSync,
+	saveSessionRepoTags,
+	saveUsageEvents,
+	type SessionRepoTagsInput,
+	type UsageEventDocument,
+} from "@/server/usage-store";
 
 const REQUIRED_STRING_FIELDS = ["requestId", "messageId", "sessionId", "projectSlug", "model"] as const;
 // `sessionTitle` is the one CONTENT-derived field this API accepts — Claude Code's own name for
@@ -22,6 +29,10 @@ const REQUIRED_NUMBER_FIELDS = [
 	"costUsd",
 ] as const;
 const REQUIRED_BOOLEAN_FIELDS = ["priced", "isSubagent"] as const;
+
+// A tag key becomes part of a field path (`repos.<key>`) when stored, so only the remote hash's own
+// shape is accepted: a dot or `$` in it would write a different field than the one named.
+const REPO_TAG_KEY = /^[0-9a-f]{64}$/;
 
 // Set by bin/backfill.mjs only (card #161 D17 Fix A). A plain marker header, not a body field —
 // deliberately kept OUT of the event allowlists above, which are the privacy boundary; a header
@@ -61,28 +72,52 @@ function isValidUsageEvent(raw: unknown): raw is Record<string, unknown> {
 }
 
 /**
+ * True only when a raw `sessionTags` entry is a session id plus a list of `{ key, name }` tags,
+ * every key a remote hash and every name a non-empty string. `name` is the same two-segment path
+ * fragment `repoName` already carries on each event.
+ * @param raw - one entry from the wire body's `sessionTags` array, of unknown shape
+ * @returns whether the entry can be stored as-is
+ */
+function isValidSessionTags(raw: unknown): raw is SessionRepoTagsInput {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+	const entry = raw as Record<string, unknown>;
+	if (typeof entry.sessionId !== "string" || !entry.sessionId || !Array.isArray(entry.tags)) return false;
+
+	return entry.tags.every((tag: unknown) => {
+		if (typeof tag !== "object" || tag === null) return false;
+		const { key, name } = tag as Record<string, unknown>;
+		return typeof key === "string" && REPO_TAG_KEY.test(key) && typeof name === "string" && name !== "";
+	});
+}
+
+/**
  * Accepts a batch of usage events and upserts them, returning how many were accepted and how
  * many were rejected for failing per-event type validation. Wire body is
  * `{ machineId, events[] }` — machineId is batch-level and stamped onto every event; each event
  * carries its own optional account, since a catch-up sync can span an account switch mid-batch.
+ * An optional `sessionTags[]` lists every repository each session worked in; an older client that
+ * omits it syncs exactly as before.
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
 	if (!verifySecret(request)) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
 
-	let body: { machineId?: unknown; events?: unknown };
+	let body: { machineId?: unknown; events?: unknown; sessionTags?: unknown };
 	try {
-		body = (await request.json()) as { machineId?: unknown; events?: unknown };
+		body = (await request.json()) as { machineId?: unknown; events?: unknown; sessionTags?: unknown };
 	} catch {
 		return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
 	}
-	const { machineId, events } = body;
+	const { machineId, events, sessionTags = [] } = body;
 
 	if (typeof machineId !== "string" || !machineId) {
 		return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
 	}
 	if (!Array.isArray(events)) {
+		return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+	}
+	if (!Array.isArray(sessionTags)) {
 		return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
 	}
 
@@ -137,6 +172,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 	const db = await getDatabase();
 	await ensureUsageIndexes(db);
 	const accepted = await saveUsageEvents(db, documents);
+	// Same skip-not-fail rule as events: a malformed entry is dropped, the rest are kept.
+	await saveSessionRepoTags(db, (sessionTags as unknown[]).filter(isValidSessionTags));
 
 	// An empty batch (the README's own setup probe, machineId "probe") is not a real sync attempt
 	// and must not mint a permanently-stale machine row (card #161 D13). A backfill run is not
